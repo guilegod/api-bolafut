@@ -1,0 +1,48 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  user
+  owner
+  admin
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      Role     @default(user)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Court {
+  id        String   @id @default(cuid())
+  name      String
+  city      String?
+  address   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  matches   Match[]
+}
+
+model Match {
+  id          String   @id @default(cuid())
+  title       String
+  date        DateTime
+  courtId     String
+  organizerId String
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  court       Court    @relation(fields: [courtId], references: [id])
+}
