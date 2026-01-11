@@ -25,23 +25,32 @@ model User {
   email     String   @unique
   password  String
   role      Role     @default(user)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  ownedCourts      Court[]        @relation("ArenaOwnerCourts")
-  organizedMatches Match[]        @relation("OrganizerMatches")
-  partnerArenas    PartnerArena[] @relation("OrganizerPartnerArenas")
+  // arenas de um arena_owner
+  courts Court[] @relation("ArenaOwnerCourts")
+
+  // partidas criadas por organizador
+  matches Match[] @relation("OrganizerMatches")
+
+  // parcerias do organizador com arenas
+  partnerships PartnerArena[] @relation("OrganizerPartnerships")
+
+  // presenças do usuário nas partidas
+  presences MatchPresence[]
 }
 
 model Court {
-  id        String   @id @default(cuid())
+  id        String    @id
   name      String
   type      CourtType @default(FUTSAL)
 
   city      String?
   address   String?
 
-  // ⚠️ começa opcional pra migrar sem quebrar dados existentes
+  // opcional para migrar sem quebrar
   arenaOwnerId String?
   arenaOwner   User? @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id])
 
@@ -57,32 +66,47 @@ model PartnerArena {
   organizerId String
   courtId     String
 
-  organizer   User  @relation("OrganizerPartnerArenas", fields: [organizerId], references: [id])
-  court       Court @relation(fields: [courtId], references: [id])
+  organizer User  @relation("OrganizerPartnerships", fields: [organizerId], references: [id])
+  court     Court @relation(fields: [courtId], references: [id])
 
-  createdAt   DateTime @default(now())
+  createdAt DateTime @default(now())
 
   @@unique([organizerId, courtId])
 }
 
 model Match {
-  id             String   @id @default(cuid())
-  title          String
-  date           DateTime
+  id            String   @id @default(cuid())
+  title         String
+  date          DateTime
 
-  organizerId    String
-  organizer      User     @relation("OrganizerMatches", fields: [organizerId], references: [id])
+  organizerId   String
+  organizer     User     @relation("OrganizerMatches", fields: [organizerId], references: [id])
 
-  // ✅ agora pode ser null (local manual)
-  courtId        String?
-  court          Court?   @relation(fields: [courtId], references: [id])
+  // ✅ pode ser null (match manual)
+  courtId       String?
+  court         Court?   @relation(fields: [courtId], references: [id])
 
-  type           CourtType @default(FUTSAL)
-  matchAddress   String?   // se vazio, UI usa court.address
+  type          CourtType @default(FUTSAL)
+  matchAddress  String?   // se vazio, UI usa court.address
 
   maxPlayers     Int      @default(14)
   pricePerPlayer Int      @default(30)
 
+  presences MatchPresence[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model MatchPresence {
+  id        String   @id @default(cuid())
+  userId    String
+  matchId   String
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, matchId])
+  @@index([matchId])
 }

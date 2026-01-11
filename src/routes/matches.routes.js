@@ -9,29 +9,34 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
+const matchCreateSchema = z.object({
+  title: z.string().min(2),
+  date: z.string().min(10), // ISO string
+  type: z.enum(["FUTSAL", "FUT7"]),
+  courtId: z.string().optional().nullable(),
+  matchAddress: z.string().optional().nullable(),
+  maxPlayers: z.number().int().min(2).max(40).optional(),
+  pricePerPlayer: z.number().int().min(0).max(9999).optional(),
+});
+
 // ✅ GET /matches
 // - admin: tudo
 // - owner: só as dele
 // - arena_owner: partidas das courts dele
-// - user: por enquanto, retorna todas (públicas)
-//   (depois você pode trocar por where: { isPublic: true } se existir)
+// - user: retorna todas (públicas por enquanto)
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
 
+    const include = {
+      court: true,
+      presences: { select: { userId: true, createdAt: true } },
+    };
+
     if (isRole(user, ["admin"])) {
       const matches = await prisma.match.findMany({
-        include: { court: true },
         orderBy: { date: "asc" },
-      });
-      return res.json(matches);
-    }
-
-    if (isRole(user, ["owner"])) {
-      const matches = await prisma.match.findMany({
-        where: { organizerId: user.id },
-        include: { court: true },
-        orderBy: { date: "asc" },
+        include,
       });
       return res.json(matches);
     }
@@ -39,16 +44,25 @@ router.get("/", authRequired, async (req, res) => {
     if (isRole(user, ["arena_owner"])) {
       const matches = await prisma.match.findMany({
         where: { court: { arenaOwnerId: user.id } },
-        include: { court: true },
         orderBy: { date: "asc" },
+        include,
       });
       return res.json(matches);
     }
 
-    // ✅ user comum: retorna todas por enquanto
+    if (isRole(user, ["owner"])) {
+      const matches = await prisma.match.findMany({
+        where: { organizerId: user.id },
+        orderBy: { date: "asc" },
+        include,
+      });
+      return res.json(matches);
+    }
+
+    // ✅ USER: vê todas
     const matches = await prisma.match.findMany({
-      include: { court: true },
       orderBy: { date: "asc" },
+      include,
     });
     return res.json(matches);
   } catch (e) {
@@ -56,18 +70,8 @@ router.get("/", authRequired, async (req, res) => {
   }
 });
 
-const matchSchema = z.object({
-  title: z.string().min(2),
-  date: z.string(), // ISO
-  time: z.string().optional(),
-  courtId: z.string().optional().nullable(),
-  type: z.enum(["FUTSAL", "FUT7"]).optional(),
-  matchAddress: z.string().optional().nullable(),
-  maxPlayers: z.number().int().min(2).optional(),
-  pricePerPlayer: z.number().int().min(0).optional(),
-});
-
-// ✅ POST /matches
+// ✅ POST /matches (owner/admin)
+// - permite manual (courtId null) => matchAddress obrigatório
 router.post("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -76,79 +80,113 @@ router.post("/", authRequired, async (req, res) => {
       return res.status(403).json({ message: "Sem permissão" });
     }
 
-    const data = matchSchema.parse(req.body);
+    const data = matchCreateSchema.parse(req.body);
 
-    const hasCourt = !!(data.courtId && String(data.courtId).trim());
+    const courtIdRaw = data.courtId ?? null;
+    const isManual =
+      !courtIdRaw ||
+      String(courtIdRaw).trim() === "" ||
+      String(courtIdRaw).trim().toLowerCase() === "null";
 
-    // =========================
-    // Caso 1: match com arena
-    // =========================
-    if (hasCourt) {
-      const courtId = String(data.courtId);
+    const addr = (data.matchAddress ?? "").toString().trim() || null;
 
-      const court = await prisma.court.findUnique({ where: { id: courtId } });
-      if (!court) return res.status(400).json({ message: "Arena inválida (courtId não existe)" });
-
-      // valida parceria (organizador só pode usar arenas liberadas)
-      if (isRole(user, ["owner"])) {
-        const allowed = await prisma.partnerArena.findUnique({
-          where: { organizerId_courtId: { organizerId: user.id, courtId } },
-        });
-        if (!allowed) {
-          return res
-            .status(403)
-            .json({ message: "Você não tem permissão para criar partida nessa arena" });
-        }
-      }
-
-      const match = await prisma.match.create({
-        data: {
-          title: data.title,
-          date: new Date(data.date),
-          organizerId: user.id,
-          courtId: courtId,
-
-          // ✅ tipo vem da court (fonte de verdade)
-          type: court.type,
-
-          matchAddress: data.matchAddress ?? null,
-
-          maxPlayers: data.maxPlayers ?? 14,
-          pricePerPlayer: data.pricePerPlayer ?? 30,
-        },
-        include: { court: true },
+    if (isManual && !addr) {
+      return res.status(400).json({
+        message: "Dados inválidos",
+        error: "matchAddress é obrigatório quando courtId é null (match manual).",
       });
-
-      return res.status(201).json(match);
     }
 
-    // =========================
-    // Caso 2: match local manual
-    // =========================
-    const addr = String(data.matchAddress || "").trim();
-    if (!addr) {
-      return res.status(400).json({ message: "Para local manual, informe matchAddress" });
+    if (!isManual) {
+      const court = await prisma.court.findUnique({ where: { id: String(courtIdRaw) } });
+      if (!court) {
+        return res.status(400).json({ message: "Dados inválidos", error: "courtId não existe." });
+      }
     }
-
-    const type = data.type || "FUTSAL";
 
     const match = await prisma.match.create({
       data: {
         title: data.title,
         date: new Date(data.date),
+        type: data.type,
         organizerId: user.id,
-        courtId: null,
-        type,
+        courtId: isManual ? null : String(courtIdRaw),
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         pricePerPlayer: data.pricePerPlayer ?? 30,
       },
-      include: { court: true },
+      include: {
+        court: true,
+        presences: { select: { userId: true, createdAt: true } },
+      },
     });
 
     return res.status(201).json(match);
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
+  }
+});
+
+// ✅ POST /matches/:id/join  (presença persistente)
+router.post("/:id/join", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = req.params.id;
+
+    const match = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: { presences: { select: { userId: true } } },
+    });
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
+
+    const already = match.presences.some((p) => p.userId === user.id);
+
+    // limite de vagas (se já está dentro, ok)
+    if (!already && match.presences.length >= match.maxPlayers) {
+      return res.status(409).json({ message: "Partida lotada" });
+    }
+
+    await prisma.matchPresence.upsert({
+      where: { userId_matchId: { userId: user.id, matchId } },
+      update: {},
+      create: { userId: user.id, matchId },
+    });
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: {
+        court: true,
+        presences: { select: { userId: true, createdAt: true } },
+      },
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao confirmar presença", error: String(e) });
+  }
+});
+
+// ✅ POST /matches/:id/leave
+router.post("/:id/leave", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = req.params.id;
+
+    await prisma.matchPresence.deleteMany({
+      where: { userId: user.id, matchId },
+    });
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: {
+        court: true,
+        presences: { select: { userId: true, createdAt: true } },
+      },
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao sair da partida", error: String(e) });
   }
 });
 

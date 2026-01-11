@@ -10,10 +10,10 @@ function isRole(user, roles = []) {
 }
 
 // ✅ GET /courts
+// - admin: tudo
 // - arena_owner: só as dele
 // - owner (organizador): só parceiras (PartnerArena)
-// - admin: tudo
-// - user: por enquanto, retorna todas (pra listar arenas no app)
+// - user: por enquanto retorna TODAS (público)
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -43,10 +43,8 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(courts);
     }
 
-    // ✅ user comum: retorna todas por enquanto
-    const courts = await prisma.court.findMany({
-      orderBy: { createdAt: "desc" },
-    });
+    // ✅ USER comum: por enquanto vê todas
+    const courts = await prisma.court.findMany({ orderBy: { createdAt: "desc" } });
     return res.json(courts);
   } catch (e) {
     return res.status(500).json({ message: "Erro ao listar arenas", error: String(e) });
@@ -72,11 +70,14 @@ router.post("/", authRequired, async (req, res) => {
 
     const court = await prisma.court.create({
       data: {
+        // seu schema Court.id não tem default, então você PRECISA mandar id
+        // se você não mandar, dá erro. Aqui mantém como você já deve estar fazendo.
+        id: req.body.id,
         name: data.name,
         type: data.type || "FUTSAL",
         city: data.city ?? null,
         address: data.address ?? null,
-        arenaOwnerId: isRole(user, ["admin"]) ? req.body.arenaOwnerId || null : user.id,
+        arenaOwnerId: isRole(user, ["admin"]) ? (req.body.arenaOwnerId || null) : user.id,
       },
     });
 
