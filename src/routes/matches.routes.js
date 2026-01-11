@@ -19,6 +19,24 @@ const matchCreateSchema = z.object({
   pricePerPlayer: z.number().int().min(0).max(9999).optional(),
 });
 
+// ✅ Include PREMIUM: presences já trazendo user.name (para o front não usar mock)
+const includePremium = {
+  court: true,
+  presences: {
+    select: {
+      userId: true,
+      createdAt: true,
+      user: {
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
+      },
+    },
+  },
+};
+
 // ✅ GET /matches
 // - admin: tudo
 // - owner: só as dele
@@ -28,15 +46,10 @@ router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
 
-    const include = {
-      court: true,
-      presences: { select: { userId: true, createdAt: true } },
-    };
-
     if (isRole(user, ["admin"])) {
       const matches = await prisma.match.findMany({
         orderBy: { date: "asc" },
-        include,
+        include: includePremium,
       });
       return res.json(matches);
     }
@@ -45,7 +58,7 @@ router.get("/", authRequired, async (req, res) => {
       const matches = await prisma.match.findMany({
         where: { court: { arenaOwnerId: user.id } },
         orderBy: { date: "asc" },
-        include,
+        include: includePremium,
       });
       return res.json(matches);
     }
@@ -54,7 +67,7 @@ router.get("/", authRequired, async (req, res) => {
       const matches = await prisma.match.findMany({
         where: { organizerId: user.id },
         orderBy: { date: "asc" },
-        include,
+        include: includePremium,
       });
       return res.json(matches);
     }
@@ -62,7 +75,7 @@ router.get("/", authRequired, async (req, res) => {
     // ✅ USER: vê todas
     const matches = await prisma.match.findMany({
       orderBy: { date: "asc" },
-      include,
+      include: includePremium,
     });
     return res.json(matches);
   } catch (e) {
@@ -83,10 +96,15 @@ router.post("/", authRequired, async (req, res) => {
     const data = matchCreateSchema.parse(req.body);
 
     const courtIdRaw = data.courtId ?? null;
+    const courtIdStr = courtIdRaw ? String(courtIdRaw).trim() : "";
+
     const isManual =
-      !courtIdRaw ||
-      String(courtIdRaw).trim() === "" ||
-      String(courtIdRaw).trim().toLowerCase() === "null";
+      !courtIdStr ||
+      courtIdStr === "" ||
+      courtIdStr.toLowerCase() === "null" ||
+      courtIdStr.toLowerCase() === "none" ||
+      courtIdStr.toLowerCase() === "undefined" ||
+      courtIdStr.toLowerCase() === "manual";
 
     const addr = (data.matchAddress ?? "").toString().trim() || null;
 
@@ -98,7 +116,7 @@ router.post("/", authRequired, async (req, res) => {
     }
 
     if (!isManual) {
-      const court = await prisma.court.findUnique({ where: { id: String(courtIdRaw) } });
+      const court = await prisma.court.findUnique({ where: { id: courtIdStr } });
       if (!court) {
         return res.status(400).json({ message: "Dados inválidos", error: "courtId não existe." });
       }
@@ -110,15 +128,12 @@ router.post("/", authRequired, async (req, res) => {
         date: new Date(data.date),
         type: data.type,
         organizerId: user.id,
-        courtId: isManual ? null : String(courtIdRaw),
+        courtId: isManual ? null : courtIdStr,
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         pricePerPlayer: data.pricePerPlayer ?? 30,
       },
-      include: {
-        court: true,
-        presences: { select: { userId: true, createdAt: true } },
-      },
+      include: includePremium,
     });
 
     return res.status(201).json(match);
@@ -135,7 +150,11 @@ router.post("/:id/join", authRequired, async (req, res) => {
 
     const match = await prisma.match.findUnique({
       where: { id: matchId },
-      include: { presences: { select: { userId: true } } },
+      select: {
+        id: true,
+        maxPlayers: true,
+        presences: { select: { userId: true } },
+      },
     });
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
 
@@ -154,10 +173,7 @@ router.post("/:id/join", authRequired, async (req, res) => {
 
     const updated = await prisma.match.findUnique({
       where: { id: matchId },
-      include: {
-        court: true,
-        presences: { select: { userId: true, createdAt: true } },
-      },
+      include: includePremium,
     });
 
     return res.json(updated);
@@ -178,10 +194,7 @@ router.post("/:id/leave", authRequired, async (req, res) => {
 
     const updated = await prisma.match.findUnique({
       where: { id: matchId },
-      include: {
-        court: true,
-        presences: { select: { userId: true, createdAt: true } },
-      },
+      include: includePremium,
     });
 
     return res.json(updated);
