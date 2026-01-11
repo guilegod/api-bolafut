@@ -14,7 +14,7 @@ const registerSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(6),
-  role: z.enum(["user", "owner", "admin"]).optional(),
+  role: z.enum(["user", "owner", "arena_owner", "admin"]).optional(),
 });
 
 router.post("/register", async (req, res) => {

@@ -9,8 +9,14 @@ datasource db {
 
 enum Role {
   user
-  owner
+  owner        // organizador
+  arena_owner  // dono de arena/estabelecimento
   admin
+}
+
+enum CourtType {
+  FUTSAL
+  FUT7
 }
 
 model User {
@@ -21,28 +27,62 @@ model User {
   role      Role     @default(user)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  ownedCourts      Court[]        @relation("ArenaOwnerCourts")
+  organizedMatches Match[]        @relation("OrganizerMatches")
+  partnerArenas    PartnerArena[] @relation("OrganizerPartnerArenas")
 }
 
 model Court {
   id        String   @id @default(cuid())
   name      String
+  type      CourtType @default(FUTSAL)
+
   city      String?
   address   String?
+
+  // ⚠️ começa opcional pra migrar sem quebrar dados existentes
+  arenaOwnerId String?
+  arenaOwner   User? @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id])
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  matches   Match[]
+  matches      Match[]
+  partnerships PartnerArena[]
+}
+
+model PartnerArena {
+  id          String   @id @default(cuid())
+  organizerId String
+  courtId     String
+
+  organizer   User  @relation("OrganizerPartnerArenas", fields: [organizerId], references: [id])
+  court       Court @relation(fields: [courtId], references: [id])
+
+  createdAt   DateTime @default(now())
+
+  @@unique([organizerId, courtId])
 }
 
 model Match {
-  id          String   @id @default(cuid())
-  title       String
-  date        DateTime
-  courtId     String
-  organizerId String
+  id             String   @id @default(cuid())
+  title          String
+  date           DateTime
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  organizerId    String
+  organizer      User     @relation("OrganizerMatches", fields: [organizerId], references: [id])
 
-  court       Court    @relation(fields: [courtId], references: [id])
+  // ✅ agora pode ser null (local manual)
+  courtId        String?
+  court          Court?   @relation(fields: [courtId], references: [id])
+
+  type           CourtType @default(FUTSAL)
+  matchAddress   String?   // se vazio, UI usa court.address
+
+  maxPlayers     Int      @default(14)
+  pricePerPlayer Int      @default(30)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
