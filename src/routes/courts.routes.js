@@ -13,6 +13,7 @@ function isRole(user, roles = []) {
 // - arena_owner: só as dele
 // - owner (organizador): só parceiras (PartnerArena)
 // - admin: tudo
+// - user: por enquanto, retorna todas (pra listar arenas no app)
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -38,12 +39,15 @@ router.get("/", authRequired, async (req, res) => {
         orderBy: { createdAt: "desc" },
       });
 
-      const courts = partnerships.map((p) => p.court);
+      const courts = partnerships.map((p) => p.court).filter(Boolean);
       return res.json(courts);
     }
 
-    // user comum: por enquanto retorna vazio (mais seguro)
-    return res.json([]);
+    // ✅ user comum: retorna todas por enquanto
+    const courts = await prisma.court.findMany({
+      orderBy: { createdAt: "desc" },
+    });
+    return res.json(courts);
   } catch (e) {
     return res.status(500).json({ message: "Erro ao listar arenas", error: String(e) });
   }
@@ -72,7 +76,7 @@ router.post("/", authRequired, async (req, res) => {
         type: data.type || "FUTSAL",
         city: data.city ?? null,
         address: data.address ?? null,
-        arenaOwnerId: isRole(user, ["admin"]) ? (req.body.arenaOwnerId || null) : user.id,
+        arenaOwnerId: isRole(user, ["admin"]) ? req.body.arenaOwnerId || null : user.id,
       },
     });
 

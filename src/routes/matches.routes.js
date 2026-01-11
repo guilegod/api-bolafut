@@ -10,9 +10,11 @@ function isRole(user, roles = []) {
 }
 
 // ✅ GET /matches
+// - admin: tudo
 // - owner: só as dele
 // - arena_owner: partidas das courts dele
-// - admin: tudo
+// - user: por enquanto, retorna todas (públicas)
+//   (depois você pode trocar por where: { isPublic: true } se existir)
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -43,8 +45,12 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(matches);
     }
 
-    // user comum: por enquanto vazio
-    return res.json([]);
+    // ✅ user comum: retorna todas por enquanto
+    const matches = await prisma.match.findMany({
+      include: { court: true },
+      orderBy: { date: "asc" },
+    });
+    return res.json(matches);
   } catch (e) {
     return res.status(500).json({ message: "Erro ao listar partidas", error: String(e) });
   }
@@ -53,7 +59,7 @@ router.get("/", authRequired, async (req, res) => {
 const matchSchema = z.object({
   title: z.string().min(2),
   date: z.string(), // ISO
-  time: z.string().optional(), // se você quiser separar, mas hoje você manda date ISO pronto
+  time: z.string().optional(),
   courtId: z.string().optional().nullable(),
   type: z.enum(["FUTSAL", "FUT7"]).optional(),
   matchAddress: z.string().optional().nullable(),
@@ -89,7 +95,9 @@ router.post("/", authRequired, async (req, res) => {
           where: { organizerId_courtId: { organizerId: user.id, courtId } },
         });
         if (!allowed) {
-          return res.status(403).json({ message: "Você não tem permissão para criar partida nessa arena" });
+          return res
+            .status(403)
+            .json({ message: "Você não tem permissão para criar partida nessa arena" });
         }
       }
 
@@ -103,7 +111,6 @@ router.post("/", authRequired, async (req, res) => {
           // ✅ tipo vem da court (fonte de verdade)
           type: court.type,
 
-          // endereço manual opcional (se quiser permitir, pode salvar também)
           matchAddress: data.matchAddress ?? null,
 
           maxPlayers: data.maxPlayers ?? 14,
