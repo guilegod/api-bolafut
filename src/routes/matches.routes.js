@@ -37,6 +37,30 @@ const includePremium = {
   },
 };
 
+// helper: quem pode mexer na match
+async function canManageMatch(user, matchId) {
+  const match = await prisma.match.findUnique({
+    where: { id: matchId },
+    select: {
+      id: true,
+      organizerId: true,
+      court: { select: { arenaOwnerId: true } },
+      status: true,
+    },
+  });
+  if (!match) return { ok: false, reason: "NOT_FOUND", match: null };
+
+  const isAdmin = user?.role === "admin";
+  const isOrganizerOwner = user?.role === "owner" && match.organizerId === user.id;
+  const isArenaOwner = user?.role === "arena_owner" && match?.court?.arenaOwnerId === user.id;
+
+  if (!isAdmin && !isOrganizerOwner && !isArenaOwner) {
+    return { ok: false, reason: "FORBIDDEN", match };
+  }
+
+  return { ok: true, reason: "OK", match };
+}
+
 // ✅ GET /matches
 // - admin: tudo
 // - owner: só as dele
@@ -72,7 +96,7 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(matches);
     }
 
-    // ✅ USER: vê todas
+    // ✅ USER: vê todas (inclusive CANCELLED; o front decide se esconde ou mostra)
     const matches = await prisma.match.findMany({
       orderBy: { date: "asc" },
       include: includePremium,
@@ -132,6 +156,9 @@ router.post("/", authRequired, async (req, res) => {
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         pricePerPlayer: data.pricePerPlayer ?? 30,
+
+        // ✅ NOVO
+        status: "SCHEDULED",
       },
       include: includePremium,
     });
@@ -139,6 +166,74 @@ router.post("/", authRequired, async (req, res) => {
     return res.status(201).json(match);
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
+  }
+});
+
+// ✅ PATCH /matches/:id/cancel  (cancelar sem apagar)
+router.patch("/:id/cancel", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = req.params.id;
+
+    const perm = await canManageMatch(user, matchId);
+    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
+    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para cancelar essa partida" });
+
+    if (perm.match.status === "CANCELLED") {
+      const updated = await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+      return res.json(updated);
+    }
+
+    const updated = await prisma.match.update({
+      where: { id: matchId },
+      data: { status: "CANCELLED" },
+      include: includePremium,
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao cancelar partida", error: String(e) });
+  }
+});
+
+// ✅ PATCH /matches/:id/uncancel (reativar)
+router.patch("/:id/uncancel", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = req.params.id;
+
+    const perm = await canManageMatch(user, matchId);
+    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
+    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para reativar essa partida" });
+
+    const updated = await prisma.match.update({
+      where: { id: matchId },
+      data: { status: "SCHEDULED" },
+      include: includePremium,
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao reativar partida", error: String(e) });
+  }
+});
+
+// ✅ DELETE /matches/:id  (excluir de vez)
+router.delete("/:id", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = req.params.id;
+
+    const perm = await canManageMatch(user, matchId);
+    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
+    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para excluir essa partida" });
+
+    // presences já apagam por cascade (no schema)
+    await prisma.match.delete({ where: { id: matchId } });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao excluir partida", error: String(e) });
   }
 });
 
@@ -153,10 +248,16 @@ router.post("/:id/join", authRequired, async (req, res) => {
       select: {
         id: true,
         maxPlayers: true,
+        status: true,
         presences: { select: { userId: true } },
       },
     });
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
+
+    // ✅ NOVO: bloqueia entrar em partida cancelada
+    if (match.status === "CANCELLED") {
+      return res.status(409).json({ message: "Essa partida foi cancelada" });
+    }
 
     const already = match.presences.some((p) => p.userId === user.id);
 

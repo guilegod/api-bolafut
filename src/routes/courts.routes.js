@@ -14,6 +14,16 @@ function isRole(user, roles = []) {
 // - arena_owner: só as dele
 // - owner (organizador): só parceiras (PartnerArena)
 // - user: por enquanto retorna TODAS (público)
+// ✅ GET /courts/public — lista para HOME (qualquer usuário)
+router.get("/public", async (req, res) => {
+  try {
+    const courts = await prisma.court.findMany({ orderBy: { createdAt: "desc" } });
+    return res.json(courts);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao listar arenas públicas", error: String(e) });
+  }
+});
+
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;

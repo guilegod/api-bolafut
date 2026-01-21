@@ -19,6 +19,12 @@ enum CourtType {
   FUT7
 }
 
+enum MatchStatus {
+  SCHEDULED
+  CANCELLED
+  FINISHED
+}
+
 model User {
   id        String   @id @default(cuid())
   name      String
@@ -91,6 +97,9 @@ model Match {
 
   maxPlayers     Int      @default(14)
   pricePerPlayer Int      @default(30)
+
+  // ✅ NOVO: status da partida
+  status        MatchStatus @default(SCHEDULED)
 
   presences MatchPresence[]
 
