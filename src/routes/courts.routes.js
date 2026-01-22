@@ -9,27 +9,45 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
-// ✅ GET /courts
-// - admin: tudo
-// - arena_owner: só as dele
-// - owner (organizador): só parceiras (PartnerArena)
-// - user: por enquanto retorna TODAS (público)
-// ✅ GET /courts/public — lista para HOME (qualquer usuário)
-router.get("/public", async (req, res) => {
-  try {
-    const courts = await prisma.court.findMany({ orderBy: { createdAt: "desc" } });
-    return res.json(courts);
-  } catch (e) {
-    return res.status(500).json({ message: "Erro ao listar arenas públicas", error: String(e) });
-  }
+function slugify(str) {
+  return String(str || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "")
+    .slice(0, 40);
+}
+
+const courtCreateSchema = z.object({
+  id: z.string().optional(), // pode vir vazio (geramos)
+  name: z.string().min(2),
+  type: z.enum(["FUTSAL", "FUT7"]).default("FUTSAL"),
+  city: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
 });
 
+const courtUpdateSchema = z.object({
+  name: z.string().min(2).optional(),
+  type: z.enum(["FUTSAL", "FUT7"]).optional(),
+  city: z.string().optional().nullable(),
+  address: z.string().optional().nullable(),
+});
+
+const includeArenaOwner = {
+  arenaOwner: { select: { id: true, name: true, email: true, role: true } },
+};
+
+// ✅ GET /courts
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
 
     if (isRole(user, ["admin"])) {
-      const courts = await prisma.court.findMany({ orderBy: { createdAt: "desc" } });
+      const courts = await prisma.court.findMany({
+        orderBy: { createdAt: "desc" },
+        include: includeArenaOwner,
+      });
       return res.json(courts);
     }
 
@@ -37,6 +55,7 @@ router.get("/", authRequired, async (req, res) => {
       const courts = await prisma.court.findMany({
         where: { arenaOwnerId: user.id },
         orderBy: { createdAt: "desc" },
+        include: includeArenaOwner,
       });
       return res.json(courts);
     }
@@ -45,7 +64,7 @@ router.get("/", authRequired, async (req, res) => {
     if (isRole(user, ["owner"])) {
       const partnerships = await prisma.partnerArena.findMany({
         where: { organizerId: user.id },
-        include: { court: true },
+        include: { court: { include: includeArenaOwner } },
         orderBy: { createdAt: "desc" },
       });
 
@@ -53,51 +72,51 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(courts);
     }
 
-    // ✅ USER comum: por enquanto vê todas
-    const courts = await prisma.court.findMany({ orderBy: { createdAt: "desc" } });
+    // user: por enquanto vê todas
+    const courts = await prisma.court.findMany({
+      orderBy: { createdAt: "desc" },
+      include: includeArenaOwner,
+    });
     return res.json(courts);
   } catch (e) {
     return res.status(500).json({ message: "Erro ao listar arenas", error: String(e) });
   }
 });
 
-const courtSchema = z.object({
-  name: z.string().min(2),
-  type: z.enum(["FUTSAL", "FUT7"]).optional(),
-  city: z.string().optional().nullable(),
-  address: z.string().optional().nullable(),
-});
-
-// ✅ POST /courts (somente arena_owner ou admin)
+// ✅ POST /courts  (arena_owner/admin)
 router.post("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
+
     if (!isRole(user, ["arena_owner", "admin"])) {
       return res.status(403).json({ message: "Sem permissão" });
     }
 
-    const data = courtSchema.parse(req.body);
+    const data = courtCreateSchema.parse(req.body);
 
-    const court = await prisma.court.create({
+    const baseId = data.id?.trim()
+      ? data.id.trim()
+      : `${slugify(data.name)}-${String(data.type).toLowerCase()}-${Math.random().toString(16).slice(2, 6)}`;
+
+    const created = await prisma.court.create({
       data: {
-        // seu schema Court.id não tem default, então você PRECISA mandar id
-        // se você não mandar, dá erro. Aqui mantém como você já deve estar fazendo.
-        id: req.body.id,
+        id: baseId,
         name: data.name,
-        type: data.type || "FUTSAL",
+        type: data.type,
         city: data.city ?? null,
         address: data.address ?? null,
-        arenaOwnerId: isRole(user, ["admin"]) ? (req.body.arenaOwnerId || null) : user.id,
+        arenaOwnerId: isRole(user, ["arena_owner"]) ? user.id : null,
       },
+      include: includeArenaOwner,
     });
 
-    return res.status(201).json(court);
+    return res.status(201).json(created);
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
   }
 });
 
-// ✅ PATCH /courts/:id (arena_owner edita só as dele, admin edita tudo)
+// ✅ PATCH /courts/:id  (arena_owner/admin)
 router.patch("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -107,29 +126,53 @@ router.patch("/:id", authRequired, async (req, res) => {
       return res.status(403).json({ message: "Sem permissão" });
     }
 
-    const patchSchema = courtSchema.partial();
-    const data = patchSchema.parse(req.body);
-
     const court = await prisma.court.findUnique({ where: { id } });
-    if (!court) return res.status(404).json({ message: "Arena não encontrada" });
+    if (!court) return res.status(404).json({ message: "Quadra não encontrada" });
 
     if (isRole(user, ["arena_owner"]) && court.arenaOwnerId !== user.id) {
-      return res.status(403).json({ message: "Você não pode editar esta arena" });
+      return res.status(403).json({ message: "Você não pode editar uma quadra que não é sua" });
     }
+
+    const data = courtUpdateSchema.parse(req.body);
 
     const updated = await prisma.court.update({
       where: { id },
       data: {
-        name: data.name ?? undefined,
-        type: data.type ?? undefined,
-        city: data.city ?? undefined,
-        address: data.address ?? undefined,
+        ...(data.name ? { name: data.name } : {}),
+        ...(data.type ? { type: data.type } : {}),
+        ...(data.city !== undefined ? { city: data.city } : {}),
+        ...(data.address !== undefined ? { address: data.address } : {}),
       },
+      include: includeArenaOwner,
     });
 
     return res.json(updated);
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
+  }
+});
+
+// ✅ DELETE /courts/:id  (arena_owner/admin)
+router.delete("/:id", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const id = req.params.id;
+
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ message: "Sem permissão" });
+    }
+
+    const court = await prisma.court.findUnique({ where: { id } });
+    if (!court) return res.status(404).json({ message: "Quadra não encontrada" });
+
+    if (isRole(user, ["arena_owner"]) && court.arenaOwnerId !== user.id) {
+      return res.status(403).json({ message: "Você não pode excluir uma quadra que não é sua" });
+    }
+
+    await prisma.court.delete({ where: { id } });
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao excluir quadra", error: String(e) });
   }
 });
 

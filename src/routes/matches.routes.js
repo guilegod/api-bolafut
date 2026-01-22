@@ -9,67 +9,43 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
+function canManageMatch(user, match) {
+  if (!user) return false;
+  if (isRole(user, ["admin"])) return true;
+  // organizador só pode mexer nas partidas dele
+  if (isRole(user, ["owner"]) && match?.organizerId === user.id) return true;
+  return false;
+}
+
+const includePremium = {
+  court: true,
+  presences: {
+    select: {
+      id: true,
+      userId: true,
+      createdAt: true,
+      user: { select: { id: true, name: true, email: true, role: true } },
+    },
+  },
+  organizer: { select: { id: true, name: true, email: true, role: true } },
+};
+
 const matchCreateSchema = z.object({
   title: z.string().min(2),
-  date: z.string().min(10), // ISO string
-  type: z.enum(["FUTSAL", "FUT7"]),
+  date: z.string().min(5), // ISO
+  type: z.enum(["FUTSAL", "FUT7"]).default("FUT7"),
   courtId: z.string().optional().nullable(),
   matchAddress: z.string().optional().nullable(),
   maxPlayers: z.number().int().min(2).max(40).optional(),
   pricePerPlayer: z.number().int().min(0).max(9999).optional(),
 });
 
-// ✅ Include PREMIUM: presences já trazendo user.name (para o front não usar mock)
-const includePremium = {
-  court: true,
-  presences: {
-    select: {
-      userId: true,
-      createdAt: true,
-      user: {
-        select: {
-          id: true,
-          name: true,
-          role: true,
-        },
-      },
-    },
-  },
-};
-
-// helper: quem pode mexer na match
-async function canManageMatch(user, matchId) {
-  const match = await prisma.match.findUnique({
-    where: { id: matchId },
-    select: {
-      id: true,
-      organizerId: true,
-      court: { select: { arenaOwnerId: true } },
-      status: true,
-    },
-  });
-  if (!match) return { ok: false, reason: "NOT_FOUND", match: null };
-
-  const isAdmin = user?.role === "admin";
-  const isOrganizerOwner = user?.role === "owner" && match.organizerId === user.id;
-  const isArenaOwner = user?.role === "arena_owner" && match?.court?.arenaOwnerId === user.id;
-
-  if (!isAdmin && !isOrganizerOwner && !isArenaOwner) {
-    return { ok: false, reason: "FORBIDDEN", match };
-  }
-
-  return { ok: true, reason: "OK", match };
-}
-
 // ✅ GET /matches
-// - admin: tudo
-// - owner: só as dele
-// - arena_owner: partidas das courts dele
-// - user: retorna todas (públicas por enquanto)
 router.get("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
 
+    // admin vê tudo
     if (isRole(user, ["admin"])) {
       const matches = await prisma.match.findMany({
         orderBy: { date: "asc" },
@@ -78,6 +54,7 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(matches);
     }
 
+    // arena_owner vê só partidas nas quadras dele
     if (isRole(user, ["arena_owner"])) {
       const matches = await prisma.match.findMany({
         where: { court: { arenaOwnerId: user.id } },
@@ -87,6 +64,7 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(matches);
     }
 
+    // owner (organizador) vê só as dele
     if (isRole(user, ["owner"])) {
       const matches = await prisma.match.findMany({
         where: { organizerId: user.id },
@@ -96,7 +74,7 @@ router.get("/", authRequired, async (req, res) => {
       return res.json(matches);
     }
 
-    // ✅ USER: vê todas (inclusive CANCELLED; o front decide se esconde ou mostra)
+    // user: por enquanto vê todas
     const matches = await prisma.match.findMany({
       orderBy: { date: "asc" },
       include: includePremium,
@@ -108,7 +86,6 @@ router.get("/", authRequired, async (req, res) => {
 });
 
 // ✅ POST /matches (owner/admin)
-// - permite manual (courtId null) => matchAddress obrigatório
 router.post("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -124,7 +101,6 @@ router.post("/", authRequired, async (req, res) => {
 
     const isManual =
       !courtIdStr ||
-      courtIdStr === "" ||
       courtIdStr.toLowerCase() === "null" ||
       courtIdStr.toLowerCase() === "none" ||
       courtIdStr.toLowerCase() === "undefined" ||
@@ -156,9 +132,6 @@ router.post("/", authRequired, async (req, res) => {
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         pricePerPlayer: data.pricePerPlayer ?? 30,
-
-        // ✅ NOVO
-        status: "SCHEDULED",
       },
       include: includePremium,
     });
@@ -169,75 +142,77 @@ router.post("/", authRequired, async (req, res) => {
   }
 });
 
-// ✅ PATCH /matches/:id/cancel  (cancelar sem apagar)
+// ✅ PATCH /matches/:id/cancel  (owner/admin)
 router.patch("/:id/cancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = req.params.id;
 
-    const perm = await canManageMatch(user, matchId);
-    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
-    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para cancelar essa partida" });
+    const match = await prisma.match.findUnique({ where: { id: matchId } });
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
 
-    if (perm.match.status === "CANCELLED") {
-      const updated = await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
-      return res.json(updated);
+    if (!canManageMatch(user, match)) {
+      return res.status(403).json({ message: "Sem permissão" });
     }
 
     const updated = await prisma.match.update({
       where: { id: matchId },
-      data: { status: "CANCELLED" },
+      data: { isCanceled: true, canceledAt: new Date() },
       include: includePremium,
     });
 
     return res.json(updated);
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao cancelar partida", error: String(e) });
+    return res.status(500).json({ message: "Erro ao cancelar", error: String(e) });
   }
 });
 
-// ✅ PATCH /matches/:id/uncancel (reativar)
+// ✅ PATCH /matches/:id/uncancel  (owner/admin)
 router.patch("/:id/uncancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = req.params.id;
 
-    const perm = await canManageMatch(user, matchId);
-    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
-    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para reativar essa partida" });
+    const match = await prisma.match.findUnique({ where: { id: matchId } });
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
+
+    if (!canManageMatch(user, match)) {
+      return res.status(403).json({ message: "Sem permissão" });
+    }
 
     const updated = await prisma.match.update({
       where: { id: matchId },
-      data: { status: "SCHEDULED" },
+      data: { isCanceled: false, canceledAt: null },
       include: includePremium,
     });
 
     return res.json(updated);
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao reativar partida", error: String(e) });
+    return res.status(500).json({ message: "Erro ao reativar", error: String(e) });
   }
 });
 
-// ✅ DELETE /matches/:id  (excluir de vez)
+// ✅ DELETE /matches/:id (owner/admin)
 router.delete("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = req.params.id;
 
-    const perm = await canManageMatch(user, matchId);
-    if (!perm.match) return res.status(404).json({ message: "Partida não encontrada" });
-    if (!perm.ok) return res.status(403).json({ message: "Sem permissão para excluir essa partida" });
+    const match = await prisma.match.findUnique({ where: { id: matchId } });
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
 
-    // presences já apagam por cascade (no schema)
+    if (!canManageMatch(user, match)) {
+      return res.status(403).json({ message: "Sem permissão" });
+    }
+
     await prisma.match.delete({ where: { id: matchId } });
-
     return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ message: "Erro ao excluir partida", error: String(e) });
   }
 });
 
-// ✅ POST /matches/:id/join  (presença persistente)
+// ✅ POST /matches/:id/join
 router.post("/:id/join", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -248,20 +223,14 @@ router.post("/:id/join", authRequired, async (req, res) => {
       select: {
         id: true,
         maxPlayers: true,
-        status: true,
+        isCanceled: true,
         presences: { select: { userId: true } },
       },
     });
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
-
-    // ✅ NOVO: bloqueia entrar em partida cancelada
-    if (match.status === "CANCELLED") {
-      return res.status(409).json({ message: "Essa partida foi cancelada" });
-    }
+    if (match.isCanceled) return res.status(409).json({ message: "Partida cancelada" });
 
     const already = match.presences.some((p) => p.userId === user.id);
-
-    // limite de vagas (se já está dentro, ok)
     if (!already && match.presences.length >= match.maxPlayers) {
       return res.status(409).json({ message: "Partida lotada" });
     }

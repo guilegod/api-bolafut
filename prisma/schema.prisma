@@ -19,12 +19,6 @@ enum CourtType {
   FUT7
 }
 
-enum MatchStatus {
-  SCHEDULED
-  CANCELLED
-  FINISHED
-}
-
 model User {
   id        String   @id @default(cuid())
   name      String
@@ -49,14 +43,13 @@ model User {
 }
 
 model Court {
-  id        String    @id
+  id        String    @id @default(cuid())
   name      String
   type      CourtType @default(FUTSAL)
 
   city      String?
   address   String?
 
-  // opcional para migrar sem quebrar
   arenaOwnerId String?
   arenaOwner   User? @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id])
 
@@ -93,13 +86,14 @@ model Match {
   court         Court?   @relation(fields: [courtId], references: [id])
 
   type          CourtType @default(FUTSAL)
-  matchAddress  String?   // se vazio, UI usa court.address
+  matchAddress  String?
 
   maxPlayers     Int      @default(14)
   pricePerPlayer Int      @default(30)
 
-  // ✅ NOVO: status da partida
-  status        MatchStatus @default(SCHEDULED)
+  // ✅ cancelamento
+  isCanceled     Boolean  @default(false)
+  canceledAt     DateTime?
 
   presences MatchPresence[]
 
