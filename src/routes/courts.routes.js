@@ -20,59 +20,77 @@ function slugify(str) {
 }
 
 const courtCreateSchema = z.object({
-  id: z.string().optional(), // pode vir vazio (geramos)
+  id: z.string().optional(),
   name: z.string().min(2),
-  type: z.enum(["FUTSAL", "FUT7"]).default("FUTSAL"),
+  type: z
+    .enum([
+      "FUTSAL",
+      "FUT7",
+      "CAMPO",
+      "VOLEI",
+      "FUTVOLEI",
+      "BEACH_TENNIS",
+      "BASQUETE",
+      "TENIS",
+      "HANDEBOL",
+      "SKATE",
+      "OUTRO",
+    ])
+    .default("FUTSAL"),
   city: z.string().optional().nullable(),
   address: z.string().optional().nullable(),
+  arenaId: z.string().optional().nullable(),
 });
 
 const courtUpdateSchema = z.object({
   name: z.string().min(2).optional(),
-  type: z.enum(["FUTSAL", "FUT7"]).optional(),
+  type: z
+    .enum([
+      "FUTSAL",
+      "FUT7",
+      "CAMPO",
+      "VOLEI",
+      "FUTVOLEI",
+      "BEACH_TENNIS",
+      "BASQUETE",
+      "TENIS",
+      "HANDEBOL",
+      "SKATE",
+      "OUTRO",
+    ])
+    .optional(),
   city: z.string().optional().nullable(),
   address: z.string().optional().nullable(),
+  arenaId: z.string().optional().nullable(),
 });
 
 const includeArenaOwner = {
   arenaOwner: { select: { id: true, name: true, email: true, role: true } },
+  arena: { select: { id: true, name: true, city: true, district: true, address: true, imageUrl: true } },
 };
 
-// ✅ GET /courts
-router.get("/", authRequired, async (req, res) => {
+router.get("/mine", authRequired, async (req, res) => {
   try {
     const user = req.user;
-
-    if (isRole(user, ["admin"])) {
-      const courts = await prisma.court.findMany({
-        orderBy: { createdAt: "desc" },
-        include: includeArenaOwner,
-      });
-      return res.json(courts);
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ message: "Sem permissão" });
     }
 
-    if (isRole(user, ["arena_owner"])) {
-      const courts = await prisma.court.findMany({
-        where: { arenaOwnerId: user.id },
-        orderBy: { createdAt: "desc" },
-        include: includeArenaOwner,
-      });
-      return res.json(courts);
-    }
+    const where = isRole(user, ["admin"]) ? {} : { arenaOwnerId: user.id };
+    const courts = await prisma.court.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      include: includeArenaOwner,
+    });
+    return res.json(courts);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao listar suas quadras", error: String(e) });
+  }
+});
 
-    // organizador (owner): só arenas parceiras
-    if (isRole(user, ["owner"])) {
-      const partnerships = await prisma.partnerArena.findMany({
-        where: { organizerId: user.id },
-        include: { court: { include: includeArenaOwner } },
-        orderBy: { createdAt: "desc" },
-      });
-
-      const courts = partnerships.map((p) => p.court).filter(Boolean);
-      return res.json(courts);
-    }
-
-    // user: por enquanto vê todas
+router.get("/", authRequired, async (req, res) => {
+  try {
+    // 🔥 Home precisa listar TODAS as arenas/quadras para qualquer role.
     const courts = await prisma.court.findMany({
       orderBy: { createdAt: "desc" },
       include: includeArenaOwner,
@@ -83,7 +101,6 @@ router.get("/", authRequired, async (req, res) => {
   }
 });
 
-// ✅ POST /courts  (arena_owner/admin)
 router.post("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -93,6 +110,15 @@ router.post("/", authRequired, async (req, res) => {
     }
 
     const data = courtCreateSchema.parse(req.body);
+
+    let arenaId = data.arenaId ? String(data.arenaId).trim() : null;
+    if (arenaId) {
+      const arena = await prisma.arena.findUnique({ where: { id: arenaId } });
+      if (!arena) return res.status(400).json({ message: "Dados inválidos", error: "arenaId não existe" });
+      if (isRole(user, ["arena_owner"]) && arena.ownerId !== user.id) {
+        return res.status(403).json({ message: "Você só pode criar quadras nas suas arenas" });
+      }
+    }
 
     const baseId = data.id?.trim()
       ? data.id.trim()
@@ -105,7 +131,8 @@ router.post("/", authRequired, async (req, res) => {
         type: data.type,
         city: data.city ?? null,
         address: data.address ?? null,
-        arenaOwnerId: isRole(user, ["arena_owner"]) ? user.id : null,
+        arenaId,
+        arenaOwnerId: isRole(user, ["arena_owner"]) ? user.id : null, // legado
       },
       include: includeArenaOwner,
     });
@@ -116,7 +143,6 @@ router.post("/", authRequired, async (req, res) => {
   }
 });
 
-// ✅ PATCH /courts/:id  (arena_owner/admin)
 router.patch("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -135,6 +161,17 @@ router.patch("/:id", authRequired, async (req, res) => {
 
     const data = courtUpdateSchema.parse(req.body);
 
+    if (data.arenaId !== undefined) {
+      const nextArenaId = data.arenaId ? String(data.arenaId).trim() : null;
+      if (nextArenaId) {
+        const arena = await prisma.arena.findUnique({ where: { id: nextArenaId } });
+        if (!arena) return res.status(400).json({ message: "Dados inválidos", error: "arenaId não existe" });
+        if (isRole(user, ["arena_owner"]) && arena.ownerId !== user.id) {
+          return res.status(403).json({ message: "Você só pode mover quadra para suas arenas" });
+        }
+      }
+    }
+
     const updated = await prisma.court.update({
       where: { id },
       data: {
@@ -142,6 +179,7 @@ router.patch("/:id", authRequired, async (req, res) => {
         ...(data.type ? { type: data.type } : {}),
         ...(data.city !== undefined ? { city: data.city } : {}),
         ...(data.address !== undefined ? { address: data.address } : {}),
+        ...(data.arenaId !== undefined ? { arenaId: data.arenaId ? String(data.arenaId).trim() : null } : {}),
       },
       include: includeArenaOwner,
     });
@@ -152,7 +190,6 @@ router.patch("/:id", authRequired, async (req, res) => {
   }
 });
 
-// ✅ DELETE /courts/:id  (arena_owner/admin)
 router.delete("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
