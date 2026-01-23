@@ -52,6 +52,7 @@ model User {
 
   // presenças do usuário nas partidas
   presences MatchPresence[]
+  messages       MatchMessage[]   // <- lado oposto do MatchMessage.user
 }
 
 model Arena {
