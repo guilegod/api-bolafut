@@ -210,4 +210,65 @@ router.delete("/:id", authRequired, async (req, res) => {
   }
 });
 
+// ======================================================
+// PRESENÇA (OFICIAL) — rotas explícitas
+// POST   /matches/:id/join   -> confirmar presença
+// DELETE /matches/:id/join   -> sair da presença
+// ======================================================
+
+router.post("/:id/join", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = String(req.params.id || "").trim();
+
+    const match = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
+
+    const exists = await prisma.matchPresence.findFirst({
+      where: { matchId, userId: user.id },
+      select: { id: true },
+    });
+
+    if (!exists) {
+      await prisma.matchPresence.create({
+        data: { matchId, userId: user.id },
+      });
+    }
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao confirmar presença", error: String(e) });
+  }
+});
+
+router.delete("/:id/join", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = String(req.params.id || "").trim();
+
+    await prisma.matchPresence.deleteMany({
+      where: { matchId, userId: user.id },
+    });
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+
+    if (!updated) return res.status(404).json({ message: "Partida não encontrada" });
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao sair da presença", error: String(e) });
+  }
+});
+
+
 export default router;
