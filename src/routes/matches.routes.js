@@ -5,6 +5,13 @@ import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
+
+
+// 🔎 Rota de verificação de versão (pra testar deploy)
+router.get("/__version", (req, res) => {
+  res.json({ ok: true, version: "matches_routes_presence_patch_v1" });
+});
+
 function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
