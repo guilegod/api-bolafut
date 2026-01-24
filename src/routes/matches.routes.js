@@ -9,13 +9,6 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
-function canManageMatch(user, match) {
-  if (!user) return false;
-  if (isRole(user, ["admin"])) return true;
-  if (isRole(user, ["owner"]) && match?.organizerId === user.id) return true;
-  return false;
-}
-
 const includePremium = {
   court: true,
   presences: {
@@ -80,7 +73,7 @@ router.get("/", authRequired, async (req, res) => {
   }
 });
 
-// POST /matches
+// POST /matches (criar partida)
 router.post("/", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -98,6 +91,7 @@ router.post("/", authRequired, async (req, res) => {
       !courtIdStr ||
       ["null", "none", "undefined", "manual", "__manual__"].includes(courtIdStr.toLowerCase());
 
+    // arena_owner não pode criar partida manual
     if (isManual && isRole(user, ["arena_owner"])) {
       return res.status(403).json({
         message: "Dono de arena não pode criar partida em local manual",
@@ -145,13 +139,14 @@ router.post("/", authRequired, async (req, res) => {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
   }
 });
-// ======================================================
-// PRESENÇA (legacy) — o front chama POST /matches/:id
-// - Confirma presença do usuário logado na partida
-// - Se já estiver presente, mantém (idempotente)
-// ======================================================
 
-// POST /matches/:id  (LEGACY: confirmar presença)
+/* ======================================================
+   PRESENÇA (LEGACY)
+   Seu front está chamando: POST /matches/:id
+   Então vamos garantir compatibilidade total.
+   ====================================================== */
+
+// POST /matches/:id  -> confirmar presença (idempotente)
 router.post("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -164,7 +159,6 @@ router.post("/:id", authRequired, async (req, res) => {
 
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
 
-    // já existe presença?
     const exists = await prisma.matchPresence.findFirst({
       where: { matchId, userId: user.id },
       select: { id: true },
@@ -187,7 +181,7 @@ router.post("/:id", authRequired, async (req, res) => {
   }
 });
 
-// DELETE /matches/:id (LEGACY: sair da presença)
+// DELETE /matches/:id -> sair da presença
 router.delete("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
