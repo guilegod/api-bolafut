@@ -38,7 +38,7 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // (LEGADO) ainda funciona
+  // (LEGADO) ainda funciona: quadras ligadas direto no arena_owner
   courts Court[] @relation("ArenaOwnerCourts")
 
   // ✅ arenas do arena_owner
@@ -52,7 +52,9 @@ model User {
 
   // presenças do usuário nas partidas
   presences MatchPresence[]
-  messages       MatchMessage[]   // <- lado oposto do MatchMessage.user
+
+  // chat da partida
+  messages MatchMessage[]
 }
 
 model Arena {
@@ -62,13 +64,27 @@ model Arena {
   district  String?
   address   String?
   imageUrl  String?
+
   openTime  String?  // "09:00"
   closeTime String?  // "23:00"
+
+  // ✅ extras “SaaS”
+  pixKey        String?
+  hasParking    Boolean @default(false)
+  hasLockerRoom Boolean @default(false)
+  hasLighting   Boolean @default(false)
+
+  ratingAvg     Float   @default(0)
+  ratingCount   Int     @default(0)
+
+  // opcional (se quiser guardar comodidades livres)
+  amenities     Json?
 
   ownerId   String
   owner     User     @relation("ArenaOwnerArenas", fields: [ownerId], references: [id], onDelete: Cascade)
 
   courts    Court[]
+  partnerships PartnerArena[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -77,48 +93,62 @@ model Arena {
 }
 
 model Court {
-  id        String   @id
+  id        String    @id @default(cuid())
   name      String
   type      CourtType @default(FUTSAL)
+
   city      String?
   address   String?
 
-  // ✅ NOVO: pertence a uma Arena
+  // ✅ pertence a uma Arena (novo)
   arenaId   String?
-  arena     Arena?   @relation(fields: [arenaId], references: [id], onDelete: SetNull)
+  arena     Arena?    @relation(fields: [arenaId], references: [id], onDelete: SetNull)
 
   // (LEGADO) dono direto da quadra (pra não quebrar o que já existe)
   arenaOwnerId String?
-  arenaOwner   User? @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
+  arenaOwner   User?   @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
+
+  // ✅ extras da quadra (o que faz sentido ser “por quadra”)
+  capacity     Int      @default(14) // maxPlayers sugerido
+  pricePerHour Int?     // sugestão para calcular preço por jogador
+  covered      Boolean  @default(false)
+  surface      String?  // sintético, madeira, cimento, etc (opcional)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   matches   Match[]
+
+  @@index([arenaId])
+  @@index([arenaOwnerId])
 }
 
 model Match {
-  id            String   @id @default(cuid())
-  title         String
-  date          DateTime
-  type          CourtType @default(FUT7)
+  id             String    @id @default(cuid())
+  title          String
+  date           DateTime
+  type           CourtType @default(FUT7)
 
-  organizerId   String
-  organizer     User     @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
+  organizerId    String
+  organizer      User      @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
 
-  courtId       String?
-  court         Court?   @relation(fields: [courtId], references: [id], onDelete: SetNull)
+  courtId        String?
+  court          Court?    @relation(fields: [courtId], references: [id], onDelete: SetNull)
 
-  maxPlayers    Int      @default(14)
-  pricePerPlayer Int     @default(30)
+  maxPlayers     Int       @default(14)
+  pricePerPlayer Int       @default(30)
 
-  matchAddress  String?  // quando for manual (sem court)
+  matchAddress   String?   // caso seja manual (sem court) ou override
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
-  presences     MatchPresence[]
-  messages      MatchMessage[]
+  presences      MatchPresence[]
+  messages       MatchMessage[]
+
+  @@index([date])
+  @@index([organizerId])
+  @@index([courtId])
 }
 
 model MatchPresence {
@@ -134,6 +164,7 @@ model MatchPresence {
   createdAt DateTime @default(now())
 
   @@unique([matchId, userId])
+  @@index([userId])
 }
 
 model MatchMessage {
@@ -146,6 +177,8 @@ model MatchMessage {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
+
+  @@index([matchId])
 }
 
 model PartnerArena {
@@ -155,8 +188,11 @@ model PartnerArena {
   status      String   @default("active")
 
   organizer   User     @relation("OrganizerPartnerships", fields: [organizerId], references: [id], onDelete: Cascade)
+  arena       Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
   @@unique([organizerId, arenaId])
+  @@index([organizerId])
+  @@index([arenaId])
 }

@@ -145,5 +145,68 @@ router.post("/", authRequired, async (req, res) => {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
   }
 });
+// ======================================================
+// PRESENÇA (legacy) — o front chama POST /matches/:id
+// - Confirma presença do usuário logado na partida
+// - Se já estiver presente, mantém (idempotente)
+// ======================================================
+
+// POST /matches/:id  (LEGACY: confirmar presença)
+router.post("/:id", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = String(req.params.id || "").trim();
+
+    const match = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+
+    if (!match) return res.status(404).json({ message: "Partida não encontrada" });
+
+    // já existe presença?
+    const exists = await prisma.matchPresence.findFirst({
+      where: { matchId, userId: user.id },
+      select: { id: true },
+    });
+
+    if (!exists) {
+      await prisma.matchPresence.create({
+        data: { matchId, userId: user.id },
+      });
+    }
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao confirmar presença", error: String(e) });
+  }
+});
+
+// DELETE /matches/:id (LEGACY: sair da presença)
+router.delete("/:id", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = String(req.params.id || "").trim();
+
+    await prisma.matchPresence.deleteMany({
+      where: { matchId, userId: user.id },
+    });
+
+    const updated = await prisma.match.findUnique({
+      where: { id: matchId },
+      include: includePremium,
+    });
+
+    if (!updated) return res.status(404).json({ message: "Partida não encontrada" });
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao sair da presença", error: String(e) });
+  }
+});
 
 export default router;
