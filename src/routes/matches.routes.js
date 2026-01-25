@@ -7,7 +7,7 @@ const router = Router();
 
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_v5_fix_price_and_middlewares" });
+  res.json({ ok: true, version: "matches_routes_v5_fixed_ola_auth_expire" });
 });
 
 function isRole(user, roles = []) {
@@ -302,13 +302,11 @@ router.post("/", authRequired, async (req, res) => {
       });
     }
 
-    // ✅ data válida
     const matchStart = new Date(data.date);
     if (Number.isNaN(matchStart.getTime())) {
       return res.status(400).json({ message: "Dados inválidos", error: "date inválido." });
     }
 
-    // ✅ duração padrão do match = 60min
     const matchEnd = addMinutes(matchStart, 60);
 
     if (!isManual) {
@@ -358,9 +356,8 @@ router.post("/", authRequired, async (req, res) => {
         where: {
           courtId: courtIdStr,
           date: { gte: windowStart, lte: windowEnd },
-          status: { notIn: ["CANCELED", "EXPIRED"] }, // ✅ não conta canceladas/expiradas como conflito
         },
-        select: { id: true, date: true, title: true, status: true },
+        select: { id: true, date: true, title: true },
       });
 
       const conflictMatch = nearMatches.find((m) => {
@@ -377,7 +374,6 @@ router.post("/", authRequired, async (req, res) => {
             id: conflictMatch.id,
             date: conflictMatch.date,
             title: conflictMatch.title,
-            status: conflictMatch.status,
           },
         });
       }
@@ -393,11 +389,7 @@ router.post("/", authRequired, async (req, res) => {
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         minPlayers: data.minPlayers ?? 0,
-
-        // ✅ FIX CRÍTICO: não use "truthy" aqui
-        // se o front mandar 0, 0 é válido e NÃO pode virar 30
         pricePerPlayer: data.pricePerPlayer ?? 30,
-
         status: "SCHEDULED",
       },
       include: includePremium,
@@ -410,10 +402,9 @@ router.post("/", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   ✅ MATCH STATUS: start / finish / cancel / uncancel / expire
+   ✅ MATCH STATUS: start / finish / cancel / uncancel
    ====================================================== */
 
-// PATCH /matches/:id/start
 router.patch("/:id/start", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -434,7 +425,6 @@ router.patch("/:id/start", authRequired, async (req, res) => {
   }
 });
 
-// PATCH /matches/:id/finish
 router.patch("/:id/finish", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -455,7 +445,6 @@ router.patch("/:id/finish", authRequired, async (req, res) => {
   }
 });
 
-// PATCH /matches/:id/cancel
 router.patch("/:id/cancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -476,7 +465,6 @@ router.patch("/:id/cancel", authRequired, async (req, res) => {
   }
 });
 
-// PATCH /matches/:id/uncancel
 router.patch("/:id/uncancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -497,32 +485,10 @@ router.patch("/:id/uncancel", authRequired, async (req, res) => {
   }
 });
 
-// PATCH /matches/:id/expire (manual)
-router.patch("/:id/expire", authRequired, async (req, res) => {
-  try {
-    const user = req.user;
-    const matchId = String(req.params.id || "").trim();
-
-    const ok = await canManageMatch(user, matchId);
-    if (!ok) return res.status(403).json({ message: "Sem permissão" });
-
-    const updated = await prisma.match.update({
-      where: { id: matchId },
-      data: { status: "EXPIRED", canceledAt: new Date() },
-      include: includePremium,
-    });
-
-    return res.json(updated);
-  } catch (e) {
-    return res.status(500).json({ message: "Erro ao expirar partida", error: String(e) });
-  }
-});
-
 /* ======================================================
    ✅ STATS
    ====================================================== */
 
-// GET /matches/:id/stats  -> placar completo
 router.get("/:id/stats", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
@@ -544,7 +510,6 @@ router.get("/:id/stats", authRequired, async (req, res) => {
   }
 });
 
-// POST /matches/:id/stats/event -> lançar gol/assist
 router.post("/:id/stats/event", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -566,7 +531,7 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
       }
     }
 
-    // ✅ Oficial: precisa permissão (organizador / arena_owner / admin)
+    // ✅ Oficial: precisa permissão
     if (data.mode === "official") {
       const canEdit = await canEditOfficialStats(user, matchId);
       if (!canEdit) {
@@ -592,23 +557,14 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
       assistsUnofficial: 0,
     };
 
-    // cria já com o delta (evita criar e depois update)
-    if (data.type === "goal" && data.mode === "official")
-      createdBase.goalsOfficial = Math.max(0, data.delta);
-    if (data.type === "goal" && data.mode === "unofficial")
-      createdBase.goalsUnofficial = Math.max(0, data.delta);
-    if (data.type === "assist" && data.mode === "official")
-      createdBase.assistsOfficial = Math.max(0, data.delta);
-    if (data.type === "assist" && data.mode === "unofficial")
-      createdBase.assistsUnofficial = Math.max(0, data.delta);
+    // cria já com o delta
+    if (data.type === "goal" && data.mode === "official") createdBase.goalsOfficial = Math.max(0, data.delta);
+    if (data.type === "goal" && data.mode === "unofficial") createdBase.goalsUnofficial = Math.max(0, data.delta);
+    if (data.type === "assist" && data.mode === "official") createdBase.assistsOfficial = Math.max(0, data.delta);
+    if (data.type === "assist" && data.mode === "unofficial") createdBase.assistsUnofficial = Math.max(0, data.delta);
 
     const stat = await prisma.matchPlayerStat.upsert({
-      where: {
-        matchId_userId: {
-          matchId,
-          userId: data.userId,
-        },
-      },
+      where: { matchId_userId: { matchId, userId: data.userId } },
       create: createdBase,
       update: updateFields,
       include: { user: { select: { id: true, name: true } } },
@@ -634,11 +590,9 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
 
 /* ======================================================
    PRESENÇA (LEGACY)
-   Seu front está chamando: POST /matches/:id
-   Então vamos garantir compatibilidade total.
+   POST /matches/:id  -> confirmar presença (compat)
    ====================================================== */
 
-// POST /matches/:id  -> confirmar presença (idempotente)
 router.post("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -651,7 +605,6 @@ router.post("/:id", authRequired, async (req, res) => {
 
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
 
-    // ❌ não entra em partida cancelada/expirada/finalizada
     if (["CANCELED", "EXPIRED", "FINISHED"].includes(match.status)) {
       return res.status(409).json({ message: `Partida ${match.status.toLowerCase()}.` });
     }
@@ -662,9 +615,7 @@ router.post("/:id", authRequired, async (req, res) => {
     });
 
     if (!exists) {
-      await prisma.matchPresence.create({
-        data: { matchId, userId: user.id },
-      });
+      await prisma.matchPresence.create({ data: { matchId, userId: user.id } });
     }
 
     const updated = await prisma.match.findUnique({
@@ -678,7 +629,6 @@ router.post("/:id", authRequired, async (req, res) => {
   }
 });
 
-// DELETE /matches/:id -> sair da presença
 router.delete("/:id", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -700,11 +650,11 @@ router.delete("/:id", authRequired, async (req, res) => {
   }
 });
 
-// ======================================================
-// PRESENÇA (OFICIAL) — rotas explícitas
-// POST   /matches/:id/join   -> confirmar presença
-// DELETE /matches/:id/join   -> sair da presença
-// ======================================================
+/* ======================================================
+   PRESENÇA (OFICIAL)
+   POST   /matches/:id/join
+   DELETE /matches/:id/join
+   ====================================================== */
 
 router.post("/:id/join", authRequired, async (req, res) => {
   try {
@@ -727,9 +677,7 @@ router.post("/:id/join", authRequired, async (req, res) => {
     });
 
     if (!exists) {
-      await prisma.matchPresence.create({
-        data: { matchId, userId: user.id },
-      });
+      await prisma.matchPresence.create({ data: { matchId, userId: user.id } });
     }
 
     const updated = await prisma.match.findUnique({
@@ -761,6 +709,33 @@ router.delete("/:id/join", authRequired, async (req, res) => {
     return res.json(updated);
   } catch (e) {
     return res.status(500).json({ message: "Erro ao sair da presença", error: String(e) });
+  }
+});
+
+/* ======================================================
+   EXPIRE MANUAL
+   PATCH /matches/:id/expire
+   (admin / owner / organizer / arena_owner da arena)
+   ====================================================== */
+router.patch("/:id/expire", authRequired, async (req, res) => {
+  try {
+    const matchId = String(req.params.id || "").trim();
+
+    const ok = await canManageMatch(req.user, matchId);
+    if (!ok) return res.status(403).json({ message: "Sem permissão para expirar a partida" });
+
+    const updated = await prisma.match.update({
+      where: { id: matchId },
+      data: {
+        status: "EXPIRED",
+        canceledAt: new Date(),
+      },
+      include: includePremium,
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    return res.status(500).json({ message: "Erro ao expirar partida", error: String(error) });
   }
 });
 
