@@ -225,11 +225,14 @@ router.get("/", authRequired, async (req, res) => {
       where = { organizerId: user.id };
     }
 
-    const matches = await prisma.match.findMany({
-      where,
-      orderBy: { date: "asc" },
-      include: includePremium,
-    });
+    const nearMatches = await prisma.match.findMany({
+  where: {
+    courtId: courtIdStr,
+    status: { in: ["SCHEDULED", "LIVE"] }, // ✅ só os que bloqueiam
+    date: { gte: windowStart, lte: windowEnd },
+  },
+  select: { id: true, date: true, title: true, status: true },
+});
 
     // ✅ aplica auto-expire “na leitura”
     const updatedMatches = [];
