@@ -562,7 +562,7 @@ router.get("/:id/stats", authRequired, async (req, res) => {
 });
 
 // POST /matches/:id/stats/event -> lançar gol/assist
-router.post("/:id/stats/event",ola, authRequired, async (req, res) => {
+router.post("/:id/stats/event", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
