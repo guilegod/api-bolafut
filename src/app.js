@@ -10,7 +10,7 @@ import courtsRoutes from "./routes/courts.routes.js";
 import matchesRoutes from "./routes/matches.routes.js";
 import partnerArenasRoutes from "./routes/partnerArenas.js";
 import arenasRoutes from "./routes/arenas.routes.js"; // ✅ NOVO
-
+import reservationsRoutes from "./routes/reservations.routes.js";
 export const app = express();
 
 // ✅ CORS (mais seguro e evita dor de cabeça no deploy)
@@ -30,6 +30,7 @@ app.use("/arenas", arenasRoutes); // ✅ NOVO
 app.use("/courts", courtsRoutes);
 app.use("/matches", matchesRoutes);
 app.use("/partner-arenas", partnerArenasRoutes);
+app.use("/reservations", reservationsRoutes);
 
 // ✅ 404 sempre por último
 app.use((req, res) => res.status(404).json({ message: "Rota não encontrada" }));

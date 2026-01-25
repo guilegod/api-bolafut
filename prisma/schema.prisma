@@ -32,6 +32,8 @@ model User {
   id        String   @id @default(cuid())
   name      String
   email     String   @unique
+  phone     String?
+
   password  String
   role      Role     @default(user)
 
@@ -55,6 +57,9 @@ model User {
 
   // chat da partida
   messages MatchMessage[]
+
+  reservations Reservation[]
+
 }
 
 model Arena {
@@ -118,6 +123,9 @@ model Court {
   updatedAt DateTime @updatedAt
 
   matches   Match[]
+
+  reservations Reservation[]
+
 
   @@index([arenaId])
   @@index([arenaOwnerId])
@@ -195,4 +203,41 @@ model PartnerArena {
   @@unique([organizerId, arenaId])
   @@index([organizerId])
   @@index([arenaId])
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CANCELED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  REFUNDED
+}
+
+model Reservation {
+  id            String @id @default(cuid())
+
+  courtId        String
+  court          Court @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  userId         String
+  user           User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  startAt        DateTime
+  endAt          DateTime
+
+  totalPrice     Int?
+  status         ReservationStatus @default(PENDING)
+  paymentStatus  PaymentStatus @default(UNPAID)
+
+  notes          String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([courtId, startAt])
+  @@index([userId])
 }

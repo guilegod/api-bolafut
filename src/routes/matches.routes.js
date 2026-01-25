@@ -5,11 +5,9 @@ import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
-
-
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_presence_patch_v1" });
+  res.json({ ok: true, version: "matches_routes_presence_patch_v2_conflicts" });
 });
 
 function isRole(user, roles = []) {
@@ -32,12 +30,35 @@ const includePremium = {
 const matchCreateSchema = z.object({
   title: z.string().min(2),
   date: z.string().min(5),
-  type: z.enum(["FUTSAL", "FUT7"]).default("FUT7"),
+  type: z.enum([
+    "FUTSAL",
+    "FUT7",
+    "CAMPO",
+    "VOLEI",
+    "FUTVOLEI",
+    "BEACH_TENNIS",
+    "BASQUETE",
+    "TENIS",
+    "HANDEBOL",
+    "SKATE",
+    "OUTRO",
+  ]).default("FUT7"),
   courtId: z.string().optional().nullable(),
   matchAddress: z.string().optional().nullable(),
   maxPlayers: z.number().int().min(2).max(40).optional(),
   pricePerPlayer: z.number().int().min(0).max(9999).optional(),
 });
+
+
+// helpers (conflito)
+function addMinutes(date, minutes) {
+  const d = new Date(date);
+  d.setMinutes(d.getMinutes() + minutes);
+  return d;
+}
+function overlaps(aStart, aEnd, bStart, bEnd) {
+  return aStart < bEnd && aEnd > bStart;
+}
 
 // GET /matches
 router.get("/", authRequired, async (req, res) => {
@@ -114,6 +135,15 @@ router.post("/", authRequired, async (req, res) => {
       });
     }
 
+    // ✅ data válida
+    const matchStart = new Date(data.date);
+    if (Number.isNaN(matchStart.getTime())) {
+      return res.status(400).json({ message: "Dados inválidos", error: "date inválido." });
+    }
+
+    // ✅ duração padrão do match = 60min
+    const matchEnd = addMinutes(matchStart, 60);
+
     if (!isManual) {
       const court = await prisma.court.findUnique({ where: { id: courtIdStr } });
       if (!court) {
@@ -125,12 +155,66 @@ router.post("/", authRequired, async (req, res) => {
           message: "Você só pode criar partidas nas suas próprias quadras",
         });
       }
+
+      // ======================================================
+      // ✅ BLOQUEIO DE CONFLITO (Match x Reservation e Match x Match)
+      // Só vale quando tem courtId (não-manual).
+      // ======================================================
+
+      // 1) Conflict com Reservation (não cancelada)
+      const conflictReservation = await prisma.reservation.findFirst({
+        where: {
+          courtId: courtIdStr,
+          status: { not: "CANCELED" },
+          startAt: { lt: matchEnd },
+          endAt: { gt: matchStart },
+        },
+        select: { id: true, startAt: true, endAt: true, status: true, paymentStatus: true },
+      });
+
+      if (conflictReservation) {
+        return res.status(409).json({
+          message: "Horário já reservado (Reservation)",
+          conflict: { type: "reservation", ...conflictReservation },
+        });
+      }
+
+      // 2) Conflict com outro Match (assumindo 60min)
+      // filtra numa janela e valida overlap
+      const windowStart = addMinutes(matchStart, -180);
+      const windowEnd = addMinutes(matchEnd, 180);
+
+      const nearMatches = await prisma.match.findMany({
+        where: {
+          courtId: courtIdStr,
+          date: { gte: windowStart, lte: windowEnd },
+        },
+        select: { id: true, date: true, title: true },
+      });
+
+      const conflictMatch = nearMatches.find((m) => {
+        const mStart = new Date(m.date);
+        const mEnd = addMinutes(mStart, 60);
+        return overlaps(matchStart, matchEnd, mStart, mEnd);
+      });
+
+      if (conflictMatch) {
+        return res.status(409).json({
+          message: "Horário já ocupado por outra partida (Match)",
+          conflict: {
+            type: "match",
+            id: conflictMatch.id,
+            date: conflictMatch.date,
+            title: conflictMatch.title,
+          },
+        });
+      }
     }
 
     const match = await prisma.match.create({
       data: {
         title: data.title,
-        date: new Date(data.date),
+        date: matchStart,
         type: data.type,
         organizerId: user.id,
         courtId: isManual ? null : courtIdStr,
@@ -269,6 +353,5 @@ router.delete("/:id/join", authRequired, async (req, res) => {
     return res.status(500).json({ message: "Erro ao sair da presença", error: String(e) });
   }
 });
-
 
 export default router;
