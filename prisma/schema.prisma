@@ -158,6 +158,12 @@ model Match {
   presences      MatchPresence[]
   messages       MatchMessage[]
   stats MatchPlayerStat[]
+  status     MatchStatus @default(SCHEDULED)
+
+  minPlayers Int @default(0)     // 0 = não exige mínimo (ou defina 10/12 se quiser padrão)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  canceledAt DateTime?
 
 
   @@index([date])
@@ -269,4 +275,12 @@ model Reservation {
 
   @@index([courtId, startAt])
   @@index([userId])
+}
+
+enum MatchStatus {
+  SCHEDULED   // agendada
+  LIVE        // em andamento
+  FINISHED    // finalizada
+  CANCELED    // cancelada manual
+  EXPIRED     // cancelada automaticamente (não fechou / passou do horário)
 }
