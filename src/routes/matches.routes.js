@@ -7,7 +7,7 @@ const router = Router();
 
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_v4_finish_autoexpire_stats" });
+  res.json({ ok: true, version: "matches_routes_v5_price_fix_expire_route" });
 });
 
 function isRole(user, roles = []) {
@@ -193,6 +193,7 @@ async function maybeAutoExpireMatch(matchId) {
     data: {
       status: "EXPIRED",
       canceledAt: new Date(),
+      expiredAt: new Date(), // ✅ mantém também, se teu model tiver
     },
     include: includePremium,
   });
@@ -231,7 +232,6 @@ router.get("/", authRequired, async (req, res) => {
     });
 
     // ✅ aplica auto-expire “na leitura”
-    // (evita job/scheduler agora)
     const updatedMatches = [];
     for (const m of matches) {
       if (m?.id) {
@@ -315,6 +315,14 @@ router.post("/", authRequired, async (req, res) => {
     // ✅ duração padrão do match = 60min
     const matchEnd = addMinutes(matchStart, 60);
 
+    // ✅ Preço final (regra SaaS profissa)
+    // - owner: respeita data.pricePerPlayer
+    // - arena_owner: se tiver court, usa preço da quadra (se existir)
+    // - admin: respeita o que vier
+    let finalPrice = data.pricePerPlayer;
+    // se não vier nada, deixa null (não trava em 30)
+    if (finalPrice === undefined) finalPrice = null;
+
     if (!isManual) {
       const court = await prisma.court.findUnique({
         where: { id: courtIdStr },
@@ -333,6 +341,13 @@ router.post("/", authRequired, async (req, res) => {
           return res.status(403).json({
             message: "Você só pode criar partidas nas suas próprias quadras",
           });
+        }
+
+        // ✅ arena_owner: força preço oficial da quadra, se existir
+        // Ajuste o campo conforme teu model Court:
+        const courtPrice = court.pricePerPlayer ?? court.price ?? null;
+        if (courtPrice !== null && courtPrice !== undefined) {
+          finalPrice = Number(courtPrice);
         }
       }
 
@@ -395,7 +410,7 @@ router.post("/", authRequired, async (req, res) => {
         matchAddress: addr,
         maxPlayers: data.maxPlayers ?? 14,
         minPlayers: data.minPlayers ?? 0, // ✅ 0 = sem mínimo (padrão)
-        pricePerPlayer: data.pricePerPlayer ?? 30,
+        pricePerPlayer: finalPrice, // ✅ não trava mais em 30
         status: "SCHEDULED",
       },
       include: includePremium,
@@ -408,7 +423,7 @@ router.post("/", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   ✅ MATCH STATUS: start / finish / cancel / uncancel
+   ✅ MATCH STATUS: start / finish / cancel / uncancel / expire
    ====================================================== */
 
 // PATCH /matches/:id/start
@@ -495,6 +510,31 @@ router.patch("/:id/uncancel", authRequired, async (req, res) => {
   }
 });
 
+// PATCH /matches/:id/expire  ✅ (manual)
+router.patch("/:id/expire", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const matchId = String(req.params.id || "").trim();
+
+    const ok = await canManageMatch(user, matchId);
+    if (!ok) return res.status(403).json({ message: "Sem permissão" });
+
+    const match = await prisma.match.update({
+      where: { id: matchId },
+      data: {
+        status: "EXPIRED",
+        expiredAt: new Date(),
+        canceledAt: new Date(), // mantém padrão do auto-expire
+      },
+      include: includePremium,
+    });
+
+    return res.json(match);
+  } catch (e) {
+    return res.status(400).json({ message: "Erro ao expirar partida", error: String(e) });
+  }
+});
+
 /* ======================================================
    ✅ STATS
    ====================================================== */
@@ -522,7 +562,7 @@ router.get("/:id/stats", authRequired, async (req, res) => {
 });
 
 // POST /matches/:id/stats/event -> lançar gol/assist
-router.post("/:id/stats/event", authRequired, async (req, res) => {
+router.post("/:id/stats/event",ola, authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -611,8 +651,6 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
 
 /* ======================================================
    PRESENÇA (LEGACY)
-   Seu front está chamando: POST /matches/:id
-   Então vamos garantir compatibilidade total.
    ====================================================== */
 
 // POST /matches/:id  -> confirmar presença (idempotente)
@@ -740,45 +778,5 @@ router.delete("/:id/join", authRequired, async (req, res) => {
     return res.status(500).json({ message: "Erro ao sair da presença", error: String(e) });
   }
 });
-
-// Expirar partida manualmente (admin / owner / organizer)
-router.patch("/:id/expire", authMiddleware, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    const match = await prisma.match.findUnique({
-      where: { id },
-    });
-
-    if (!match) {
-      return res.status(404).json({ error: "Partida não encontrada" });
-    }
-
-    // Só quem criou, admin ou dono de arena
-    const isAdmin =
-      req.user.role === "admin" ||
-      req.user.role === "owner" ||
-      req.user.id === match.organizerId;
-
-    if (!isAdmin) {
-      return res.status(403).json({ error: "Sem permissão para expirar a partida" });
-    }
-
-    const updated = await prisma.match.update({
-      where: { id },
-      data: {
-        status: "EXPIRED",
-        expiredAt: new Date(),
-      },
-    });
-
-    return res.json(updated);
-  } catch (error) {
-    console.error("Erro ao expirar partida:", error);
-    return res.status(500).json({ error: "Erro ao expirar partida" });
-  }
-});
-
 
 export default router;
