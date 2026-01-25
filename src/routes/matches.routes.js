@@ -741,4 +741,44 @@ router.delete("/:id/join", authRequired, async (req, res) => {
   }
 });
 
+// Expirar partida manualmente (admin / owner / organizer)
+router.patch("/:id/expire", authMiddleware, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const match = await prisma.match.findUnique({
+      where: { id },
+    });
+
+    if (!match) {
+      return res.status(404).json({ error: "Partida não encontrada" });
+    }
+
+    // Só quem criou, admin ou dono de arena
+    const isAdmin =
+      req.user.role === "admin" ||
+      req.user.role === "owner" ||
+      req.user.id === match.organizerId;
+
+    if (!isAdmin) {
+      return res.status(403).json({ error: "Sem permissão para expirar a partida" });
+    }
+
+    const updated = await prisma.match.update({
+      where: { id },
+      data: {
+        status: "EXPIRED",
+        expiredAt: new Date(),
+      },
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    console.error("Erro ao expirar partida:", error);
+    return res.status(500).json({ error: "Erro ao expirar partida" });
+  }
+});
+
+
 export default router;
