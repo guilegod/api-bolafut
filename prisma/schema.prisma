@@ -59,12 +59,16 @@ model User {
   messages MatchMessage[]
 
   reservations Reservation[]
+  
+  stats MatchPlayerStat[]
+
 
 }
 
 model Arena {
   id        String   @id @default(cuid())
   name      String
+  slug      String   @unique   // 👈 NOVO
   city      String?
   district  String?
   address   String?
@@ -153,6 +157,8 @@ model Match {
 
   presences      MatchPresence[]
   messages       MatchMessage[]
+  stats MatchPlayerStat[]
+
 
   @@index([date])
   @@index([organizerId])
@@ -188,6 +194,29 @@ model MatchMessage {
 
   @@index([matchId])
 }
+
+model MatchPlayerStat {
+  id        String   @id @default(cuid())
+  matchId   String
+  userId    String
+
+  goalsOfficial     Int @default(0)
+  assistsOfficial   Int @default(0)
+
+  goalsUnofficial   Int @default(0)
+  assistsUnofficial Int @default(0)
+
+  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchId, userId])
+  @@index([userId])
+}
+
+
 
 model PartnerArena {
   id          String   @id @default(cuid())
