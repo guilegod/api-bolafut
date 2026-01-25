@@ -225,14 +225,11 @@ router.get("/", authRequired, async (req, res) => {
       where = { organizerId: user.id };
     }
 
-    const nearMatches = await prisma.match.findMany({
-  where: {
-    courtId: courtIdStr,
-    status: { in: ["SCHEDULED", "LIVE"] }, // ✅ só os que bloqueiam
-    date: { gte: windowStart, lte: windowEnd },
-  },
-  select: { id: true, date: true, title: true, status: true },
-});
+    const matches = await prisma.match.findMany({
+      where,
+      orderBy: { date: "asc" },
+      include: includePremium,
+    });
 
     // ✅ aplica auto-expire “na leitura”
     const updatedMatches = [];
@@ -377,12 +374,14 @@ router.post("/", authRequired, async (req, res) => {
       const windowEnd = addMinutes(matchEnd, 180);
 
       const nearMatches = await prisma.match.findMany({
-        where: {
-          courtId: courtIdStr,
-          date: { gte: windowStart, lte: windowEnd },
-        },
-        select: { id: true, date: true, title: true },
-      });
+  where: {
+    courtId: courtIdStr,
+    status: { in: ["SCHEDULED", "LIVE"] }, // ✅ só os que bloqueiam
+    date: { gte: windowStart, lte: windowEnd },
+  },
+  select: { id: true, date: true, title: true, status: true },
+});
+
 
       const conflictMatch = nearMatches.find((m) => {
         const mStart = new Date(m.date);
