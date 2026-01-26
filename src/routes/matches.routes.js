@@ -779,4 +779,62 @@ router.patch("/:id/expire", authRequired, async (req, res) => {
   }
 });
 
+/* ======================================================
+   💬 CHAT DA PARTIDA
+   ====================================================== */
+
+// Listar mensagens
+router.get("/:id/messages", authRequired, async (req, res) => {
+  try {
+    const matchId = String(req.params.id || "").trim();
+
+    const messages = await prisma.matchMessage.findMany({
+      where: { matchId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        user: { select: { id: true, name: true, imageUrl: true } },
+      },
+    });
+
+    return res.json(messages);
+  } catch (e) {
+    return res.status(500).json({
+      message: "Erro ao buscar mensagens",
+      error: String(e),
+    });
+  }
+});
+
+// Enviar mensagem
+router.post("/:id/messages", authRequired, async (req, res) => {
+  try {
+    const matchId = String(req.params.id || "").trim();
+    const userId = req.user.id;
+    const { content } = req.body;
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({ message: "Mensagem vazia" });
+    }
+
+    const message = await prisma.matchMessage.create({
+      data: {
+        matchId,
+        userId,
+        content: content.trim(),
+      },
+      include: {
+        user: { select: { id: true, name: true, imageUrl: true } },
+      },
+    });
+
+    return res.status(201).json(message);
+  } catch (e) {
+    return res.status(500).json({
+      message: "Erro ao enviar mensagem",
+      error: String(e),
+    });
+  }
+});
+
+
 export default router;
