@@ -7,7 +7,7 @@ const router = Router();
 
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_v5_fixed_ola_auth_expire" });
+  res.json({ ok: true, version: "matches_routes_v6_fixed_autoexpire_list_full" });
 });
 
 function isRole(user, roles = []) {
@@ -159,35 +159,74 @@ async function canManageMatch(user, matchId) {
  * - e minPlayers > 0
  * - e presences < minPlayers
  * => status vira EXPIRED e canceledAt é setado
+ *
+ * ✅ Fix importante:
+ * Quando NÃO expira, NUNCA devolve objeto "capado".
+ *
+ * opts:
+ * - returnUpdatedOnly: se true, retorna null quando NÃO houve mudança; retorna match completo quando mudou.
+ * - currentMatch: se você já tem o match completo (includePremium), passa aqui pra evitar query extra.
  */
-async function maybeAutoExpireMatch(matchId) {
-  const match = await prisma.match.findUnique({
-    where: { id: matchId },
-    select: {
-      id: true,
-      status: true,
-      date: true,
-      minPlayers: true,
-      presences: { select: { id: true } },
-    },
-  });
+async function maybeAutoExpireMatch(matchId, opts = {}) {
+  const { returnUpdatedOnly = false, currentMatch = null } = opts;
 
-  if (!match) return null;
+  // Se já temos o match completo, extraímos só o necessário sem query extra
+  const base =
+    currentMatch && currentMatch.id === matchId
+      ? {
+          id: currentMatch.id,
+          status: currentMatch.status,
+          date: currentMatch.date,
+          minPlayers: currentMatch.minPlayers,
+          presences: currentMatch.presences,
+        }
+      : await prisma.match.findUnique({
+          where: { id: matchId },
+          select: {
+            id: true,
+            status: true,
+            date: true,
+            minPlayers: true,
+            presences: { select: { id: true } },
+          },
+        });
 
-  const status = match.status || "SCHEDULED";
-  if (status !== "SCHEDULED") return match;
+  if (!base) return null;
 
-  const minPlayers = Number(match.minPlayers || 0);
-  if (minPlayers <= 0) return match;
+  const status = base.status || "SCHEDULED";
+  if (status !== "SCHEDULED") {
+    if (returnUpdatedOnly) return null;
+    return currentMatch
+      ? currentMatch
+      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+  }
+
+  const minPlayers = Number(base.minPlayers || 0);
+  if (minPlayers <= 0) {
+    if (returnUpdatedOnly) return null;
+    return currentMatch
+      ? currentMatch
+      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+  }
 
   const now = new Date();
-  const deadline = addMinutes(new Date(match.date), 30); // 30min depois do start
-  if (now <= deadline) return match;
+  const deadline = addMinutes(new Date(base.date), 30); // 30min depois do start
+  if (now <= deadline) {
+    if (returnUpdatedOnly) return null;
+    return currentMatch
+      ? currentMatch
+      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+  }
 
-  const joined = match.presences?.length || 0;
-  if (joined >= minPlayers) return match;
+  const joined = base.presences?.length || 0;
+  if (joined >= minPlayers) {
+    if (returnUpdatedOnly) return null;
+    return currentMatch
+      ? currentMatch
+      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+  }
 
-  // expira
+  // ✅ expira (aqui SIM muda)
   const updated = await prisma.match.update({
     where: { id: matchId },
     data: {
@@ -227,11 +266,14 @@ router.get("/", authRequired, async (req, res) => {
       include: includePremium,
     });
 
-    // ✅ aplica auto-expire “na leitura”
+    // ✅ aplica auto-expire “na leitura” SEM quebrar payload
     const updatedMatches = [];
     for (const m of matches) {
       if (m?.id) {
-        const maybe = await maybeAutoExpireMatch(m.id);
+        const maybe = await maybeAutoExpireMatch(m.id, {
+          returnUpdatedOnly: false,
+          currentMatch: m,
+        });
         updatedMatches.push(maybe || m);
       } else {
         updatedMatches.push(m);
@@ -251,12 +293,10 @@ router.get("/:id", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
-    const updated = await maybeAutoExpireMatch(matchId);
-    if (updated) return res.json(updated);
-
-    const match = await prisma.match.findUnique({
-      where: { id: matchId },
-      include: includePremium,
+    // ✅ agora sempre retorna match completo (expirado ou não)
+    const match = await maybeAutoExpireMatch(matchId, {
+      returnUpdatedOnly: false,
+      currentMatch: null,
     });
 
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
