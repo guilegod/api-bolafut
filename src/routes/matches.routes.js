@@ -850,5 +850,32 @@ router.post("/:id/messages", authRequired, async (req, res) => {
     return res.status(400).json({ message: "Erro ao enviar mensagem", error: String(e) });
   }
 });
+// GET /matches/:id/messages/since?after=ISO
+router.get("/:id/messages/since", authRequired, async (req, res) => {
+  try {
+    const matchId = String(req.params.id || "").trim();
+    const ok = await canAccessChat(req.user, matchId);
+    if (!ok) return res.status(403).json({ message: "Sem permissão" });
+
+    const afterRaw = String(req.query.after || "").trim();
+    const after = afterRaw ? new Date(afterRaw) : null;
+
+    const where = after && !Number.isNaN(after.getTime())
+      ? { matchId, createdAt: { gt: after } }
+      : { matchId };
+
+    const messages = await prisma.matchMessage.findMany({
+      where,
+      orderBy: { createdAt: "asc" },
+      include: { user: { select: { id: true, name: true, role: true, imageUrl: true } } },
+      take: 50,
+    });
+
+    return res.json(messages);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao buscar mensagens", error: String(e) });
+  }
+});
+
 
 export default router;
