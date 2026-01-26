@@ -780,61 +780,75 @@ router.patch("/:id/expire", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   💬 CHAT DA PARTIDA
+   💬 CHAT DA PARTIDA (MatchMessage)
+   - Schema usa: text (não content)
+   - Permissão: admin / organizer / arena_owner (manage) OU usuário presente
    ====================================================== */
 
-// Listar mensagens
+const messageSchema = z.object({
+  text: z.string().min(1).max(600),
+});
+
+async function canAccessChat(user, matchId) {
+  if (user?.role === "admin") return true;
+
+  // organizer/arena_owner da partida podem ver mesmo sem presença
+  const manage = await canManageMatch(user, matchId);
+  if (manage) return true;
+
+  // usuário comum: precisa estar presente
+  const inMatch = await isUserInMatch(user?.id, matchId);
+  return Boolean(inMatch);
+}
+
+// GET /matches/:id/messages
 router.get("/:id/messages", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
+
+    const ok = await canAccessChat(req.user, matchId);
+    if (!ok) return res.status(403).json({ message: "Sem permissão para ver o chat desta partida" });
 
     const messages = await prisma.matchMessage.findMany({
       where: { matchId },
       orderBy: { createdAt: "asc" },
       include: {
-        user: { select: { id: true, name: true, imageUrl: true } },
+        user: { select: { id: true, name: true, imageUrl: true, role: true } },
       },
     });
 
     return res.json(messages);
   } catch (e) {
-    return res.status(500).json({
-      message: "Erro ao buscar mensagens",
-      error: String(e),
-    });
+    return res.status(500).json({ message: "Erro ao buscar mensagens", error: String(e) });
   }
 });
 
-// Enviar mensagem
+// POST /matches/:id/messages
 router.post("/:id/messages", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
-    const userId = req.user.id;
-    const { content } = req.body;
+    const userId = req.user?.id;
 
-    if (!content || !content.trim()) {
-      return res.status(400).json({ message: "Mensagem vazia" });
-    }
+    const ok = await canAccessChat(req.user, matchId);
+    if (!ok) return res.status(403).json({ message: "Sem permissão para enviar mensagem nesta partida" });
 
-    const message = await prisma.matchMessage.create({
+    const data = messageSchema.parse(req.body);
+
+    const created = await prisma.matchMessage.create({
       data: {
         matchId,
         userId,
-        content: content.trim(),
+        text: data.text.trim(), // ✅ campo correto do schema
       },
       include: {
-        user: { select: { id: true, name: true, imageUrl: true } },
+        user: { select: { id: true, name: true, imageUrl: true, role: true } },
       },
     });
 
-    return res.status(201).json(message);
+    return res.status(201).json(created);
   } catch (e) {
-    return res.status(500).json({
-      message: "Erro ao enviar mensagem",
-      error: String(e),
-    });
+    return res.status(400).json({ message: "Erro ao enviar mensagem", error: String(e) });
   }
 });
-
 
 export default router;
