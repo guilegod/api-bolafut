@@ -4,6 +4,9 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { signToken } from "../utils/jwt.js";
 import { authRequired } from "../middleware/auth.js";
+import crypto from "crypto";
+import { makeMailer } from "../utils/mailer.js";
+
 
 const router = Router();
 
@@ -97,5 +100,120 @@ router.get("/me", authRequired, async (req, res) => {
     return res.status(500).json({ message: "Erro ao buscar usuário" });
   }
 });
+
+// =======================
+// FORGOT PASSWORD
+// =======================
+const forgotSchema = z.object({
+  email: z.string().email(),
+});
+
+router.post("/forgot", async (req, res) => {
+  try {
+    const { email } = forgotSchema.parse(req.body);
+
+    // sempre responder OK (não vaza se existe conta)
+    const user = await prisma.user.findUnique({ where: { email } });
+
+    if (!user) {
+      return res.json({ ok: true });
+    }
+
+    // token "puro" para mandar no link
+    const token = crypto.randomBytes(32).toString("hex");
+
+    // salva só o hash no banco (mais seguro)
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt,
+      },
+    });
+
+    const appUrl = process.env.APP_URL || "http://localhost:5173";
+    const resetUrl = `${appUrl}/reset-password?token=${token}`;
+
+    const mailer = makeMailer();
+    const from = process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@borapo.com";
+
+    await mailer.sendMail({
+      from: `BoraPô <${from}>`,
+      to: user.email,
+      subject: "BoraPô — Recuperação de senha",
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.5">
+          <h2>Recuperação de senha</h2>
+          <p>Você pediu para redefinir sua senha no <b>BoraPô</b>.</p>
+          <p>Clique no botão abaixo (válido por 30 minutos):</p>
+          <p>
+            <a href="${resetUrl}" style="display:inline-block;padding:12px 16px;border-radius:10px;background:#2EDC8F;color:#061b12;text-decoration:none;font-weight:800">
+              Redefinir senha
+            </a>
+          </p>
+          <p>Se você não pediu isso, ignore este e-mail.</p>
+        </div>
+      `,
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(400).json({
+      message: "Dados inválidos",
+      error: e?.issues ?? String(e),
+    });
+  }
+});
+
+// =======================
+// RESET PASSWORD
+// =======================
+const resetSchema = z.object({
+  token: z.string().min(20),
+  password: z.string().min(6),
+});
+
+router.post("/reset", async (req, res) => {
+  try {
+    const { token, password } = resetSchema.parse(req.body);
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const row = await prisma.passwordResetToken.findUnique({
+      where: { tokenHash },
+      include: { user: true },
+    });
+
+    if (!row) return res.status(400).json({ message: "Token inválido." });
+    if (row.usedAt) return res.status(400).json({ message: "Token já usado." });
+    if (new Date(row.expiresAt).getTime() < Date.now()) {
+      return res.status(400).json({ message: "Token expirado." });
+    }
+
+    const hash = await bcrypt.hash(password, 10);
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: row.userId },
+        data: { password: hash },
+      }),
+      prisma.passwordResetToken.update({
+        where: { id: row.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(400).json({
+      message: "Dados inválidos",
+      error: e?.issues ?? String(e),
+    });
+  }
+});
+
 
 export default router;

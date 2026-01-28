@@ -61,10 +61,10 @@ model User {
   reservations Reservation[]
   
   stats MatchPlayerStat[]
+  passwordResetTokens PasswordResetToken[]
 
 
 }
-
 model PasswordResetToken {
   id        String   @id @default(cuid())
   userId    String
