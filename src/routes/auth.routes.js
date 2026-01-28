@@ -7,7 +7,6 @@ import { authRequired } from "../middleware/auth.js";
 import crypto from "crypto";
 import { makeMailer } from "../utils/mailer.js";
 
-
 const router = Router();
 
 // =======================
@@ -43,7 +42,6 @@ router.post("/register", async (req, res) => {
 
     return res.status(201).json({ user, token });
   } catch (e) {
-    // Se for ZodError, e.issues existe e ajuda MUITO no debug
     return res.status(400).json({
       message: "Dados inválidos",
       error: e?.issues ?? String(e),
@@ -112,12 +110,9 @@ router.post("/forgot", async (req, res) => {
   try {
     const { email } = forgotSchema.parse(req.body);
 
-    // sempre responder OK (não vaza se existe conta)
+    // ✅ sempre responder OK (não vaza se existe conta)
     const user = await prisma.user.findUnique({ where: { email } });
-
-    if (!user) {
-      return res.json({ ok: true });
-    }
+    if (!user) return res.json({ ok: true });
 
     // token "puro" para mandar no link
     const token = crypto.randomBytes(32).toString("hex");
@@ -138,27 +133,39 @@ router.post("/forgot", async (req, res) => {
     const appUrl = process.env.APP_URL || "http://localhost:5173";
     const resetUrl = `${appUrl}/reset-password?token=${token}`;
 
-    const mailer = makeMailer();
-    const from = process.env.SMTP_FROM || process.env.SMTP_USER || "no-reply@borapo.com";
+    const { transporter, from, isReady } = makeMailer();
 
-    await mailer.sendMail({
-      from: `BoraPô <${from}>`,
-      to: user.email,
-      subject: "BoraPô — Recuperação de senha",
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.5">
-          <h2>Recuperação de senha</h2>
-          <p>Você pediu para redefinir sua senha no <b>BoraPô</b>.</p>
-          <p>Clique no botão abaixo (válido por 30 minutos):</p>
-          <p>
-            <a href="${resetUrl}" style="display:inline-block;padding:12px 16px;border-radius:10px;background:#2EDC8F;color:#061b12;text-decoration:none;font-weight:800">
-              Redefinir senha
-            </a>
-          </p>
-          <p>Se você não pediu isso, ignore este e-mail.</p>
-        </div>
-      `,
-    });
+    // ✅ Se SMTP não estiver configurado, não derruba o fluxo
+    if (!isReady) {
+      console.warn("[forgot] SMTP não configurado — pulando envio de email");
+      return res.json({ ok: true });
+    }
+
+    try {
+      await transporter.sendMail({
+        from, // ✅ já vem "BoraPô <suporte@borapo.com>" via env, ou o email puro
+        to: user.email,
+        subject: "BoraPô — Recuperação de senha",
+        html: `
+          <div style="font-family:Arial,sans-serif;line-height:1.5">
+            <h2>Recuperação de senha</h2>
+            <p>Você pediu para redefinir sua senha no <b>BoraPô</b>.</p>
+            <p>Clique no botão abaixo (válido por 30 minutos):</p>
+            <p>
+              <a href="${resetUrl}" style="display:inline-block;padding:12px 16px;border-radius:10px;background:#2EDC8F;color:#061b12;text-decoration:none;font-weight:800">
+                Redefinir senha
+              </a>
+            </p>
+            <p>Se você não pediu isso, ignore este e-mail.</p>
+          </div>
+        `,
+      });
+
+      console.log("[forgot] email enviado para:", user.email);
+    } catch (err) {
+      console.error("[forgot] falha ao enviar email:", err);
+      // ✅ não retorna 400, não trava fluxo
+    }
 
     return res.json({ ok: true });
   } catch (e) {
@@ -214,6 +221,5 @@ router.post("/reset", async (req, res) => {
     });
   }
 });
-
 
 export default router;
