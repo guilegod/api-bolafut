@@ -9,7 +9,7 @@ import {
 } from "../controllers/friends.controller.js";
 
 // supondo que você já tem auth middleware
-import { requireAuth } from "../middlewares/requireAuth.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
