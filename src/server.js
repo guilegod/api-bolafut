@@ -1,4 +1,7 @@
-import { app } from "./app.js";
+import app from "./app.js";
 
-const port = Number(process.env.PORT || 3333);
-app.listen(port, () => console.log(`API on http://localhost:${port}`));
+const PORT = process.env.PORT || 10000;
+
+app.listen(PORT, () => {
+  console.log(`🚀 API BoraPô rodando na porta ${PORT}`);
+});
