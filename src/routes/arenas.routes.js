@@ -13,6 +13,7 @@ function isRole(user, roles = []) {
 function slugify(str) {
   return String(str || "")
     .toLowerCase()
+    .trim()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
@@ -32,6 +33,12 @@ const arenaCreateSchema = z.object({
 
 const arenaUpdateSchema = arenaCreateSchema.partial();
 
+// ✅ REUSO: include padrão da arena
+const arenaInclude = {
+  owner: { select: { id: true, name: true } },
+  courts: { select: { id: true, name: true, type: true, city: true, address: true } },
+};
+
 // ======================================================
 // ✅ GET /arenas — público (pra feed/home)
 // ======================================================
@@ -39,10 +46,7 @@ router.get("/", async (req, res) => {
   try {
     const arenas = await prisma.arena.findMany({
       orderBy: { createdAt: "desc" },
-      include: {
-        owner: { select: { id: true, name: true } },
-        courts: { select: { id: true, name: true, type: true, city: true, address: true } },
-      },
+      include: arenaInclude,
     });
 
     return res.json(
@@ -73,13 +77,9 @@ router.get("/mine", authRequired, async (req, res) => {
     const arenas = await prisma.arena.findMany({
       where,
       orderBy: { createdAt: "desc" },
-      include: {
-        owner: { select: { id: true, name: true } },
-        courts: { select: { id: true, name: true, type: true, city: true, address: true } },
-      },
+      include: arenaInclude,
     });
 
-    // Se você quiser só 1 arena por conta, devolve arenas[0] no front.
     return res.json(
       arenas.map((a) => ({
         ...a,
@@ -92,28 +92,28 @@ router.get("/mine", authRequired, async (req, res) => {
 });
 
 // ======================================================
-// ✅ GET /arenas/slug/:slug — público (perfil bonito por slug)
-// (opcional, mas recomendo)
+// ✅ GET /arenas/slug/:slug — público (perfil por slug)
 // ======================================================
 router.get("/slug/:slug", async (req, res) => {
   try {
-    const slug = String(req.params.slug || "").trim().toLowerCase();
+    const slug = slugify(req.params.slug);
+
     const arena = await prisma.arena.findFirst({
       where: { slug },
-      include: {
-        owner: { select: { id: true, name: true } },
-        courts: { select: { id: true, name: true, type: true, city: true, address: true } },
-      },
+      include: arenaInclude,
     });
 
     if (!arena) return res.status(404).json({ message: "Arena não encontrada" });
+
     return res.json({ ...arena, courtsCount: arena.courts?.length || 0 });
   } catch (e) {
     return res.status(500).json({ message: "Erro ao buscar arena", error: String(e) });
   }
 });
 
+// ======================================================
 // ✅ POST /arenas/setup — cria a 1ª arena automaticamente pro dono
+// ======================================================
 router.post("/setup", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -133,7 +133,7 @@ router.post("/setup", authRequired, async (req, res) => {
     }
 
     // cria uma padrão
-    const baseName = req.body?.name || `Arena de ${user.name || "Dono"}`;
+    const baseName = (req.body?.name || `Arena de ${user.name || "Dono"}`).toString();
     const baseSlug = slugify(baseName);
     const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
 
@@ -163,14 +163,14 @@ router.post("/setup", authRequired, async (req, res) => {
 router.get("/:id", async (req, res) => {
   try {
     const id = String(req.params.id);
+
     const arena = await prisma.arena.findUnique({
       where: { id },
-      include: {
-        owner: { select: { id: true, name: true } },
-        courts: { select: { id: true, name: true, type: true, city: true, address: true } },
-      },
+      include: arenaInclude,
     });
+
     if (!arena) return res.status(404).json({ message: "Arena não encontrada" });
+
     return res.json({ ...arena, courtsCount: arena.courts?.length || 0 });
   } catch (e) {
     return res.status(500).json({ message: "Erro ao buscar arena", error: String(e) });
@@ -190,14 +190,13 @@ router.post("/", authRequired, async (req, res) => {
 
     const data = arenaCreateSchema.parse(req.body);
 
-    // slug único (se teu schema tiver `slug String @unique`)
     const baseSlug = slugify(data.name);
     const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
 
     const created = await prisma.arena.create({
       data: {
         name: data.name,
-        slug, // ✅ (se teu schema não tiver slug, remove essa linha)
+        slug,
         city: data.city ?? null,
         district: data.district ?? null,
         address: data.address ?? null,
@@ -258,7 +257,6 @@ router.patch("/:id", authRequired, async (req, res) => {
       where: { id },
       data: {
         ...(data.name ? { name: data.name } : {}),
-        // slug opcional: se renomeou, dá pra manter slug antigo pra não quebrar link
         ...(data.city !== undefined ? { city: data.city } : {}),
         ...(data.district !== undefined ? { district: data.district } : {}),
         ...(data.address !== undefined ? { address: data.address } : {}),
