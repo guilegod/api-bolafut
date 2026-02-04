@@ -113,6 +113,50 @@ router.get("/slug/:slug", async (req, res) => {
   }
 });
 
+// ✅ POST /arenas/setup — cria a 1ª arena automaticamente pro dono
+router.post("/setup", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ message: "Sem permissão" });
+    }
+
+    // se já existe, devolve
+    const existing = await prisma.arena.findFirst({
+      where: { ownerId: user.id },
+      include: arenaInclude,
+    });
+
+    if (existing) {
+      return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
+    }
+
+    // cria uma padrão
+    const baseName = req.body?.name || `Arena de ${user.name || "Dono"}`;
+    const baseSlug = slugify(baseName);
+    const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
+
+    const created = await prisma.arena.create({
+      data: {
+        name: baseName,
+        slug,
+        city: req.body?.city ?? null,
+        district: req.body?.district ?? null,
+        address: req.body?.address ?? null,
+        openTime: req.body?.openTime ?? null,
+        closeTime: req.body?.closeTime ?? null,
+        ownerId: user.id,
+      },
+      include: arenaInclude,
+    });
+
+    return res.status(201).json({ ...created, courtsCount: created.courts?.length || 0 });
+  } catch (e) {
+    return res.status(500).json({ message: "Erro no setup da arena", error: String(e) });
+  }
+});
+
 // ======================================================
 // ✅ GET /arenas/:id — público (por id)
 // ======================================================
