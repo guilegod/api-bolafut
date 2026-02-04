@@ -9,11 +9,11 @@ import {
 } from "../controllers/friends.controller.js";
 
 // supondo que você já tem auth middleware
-import { requireAuth } from "../middleware/auth.js";
+import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
-router.use(requireAuth);
+router.use(authRequired);
 
 // amigos (lista final)
 router.get("/", listFriends);
