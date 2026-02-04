@@ -13,6 +13,10 @@ import arenasRoutes from "./routes/arenas.routes.js";
 import reservationsRoutes from "./routes/reservations.routes.js";
 import friendsRoutes from "./routes/friends.routes.js";
 
+// ✅ NOVO
+import usersRoutes from "./routes/users.routes.js";
+import presenceRoutes from "./routes/presence.routes.js";
+
 export const app = express();
 
 // ✅ behind proxy (Render / Nginx / etc.)
@@ -35,6 +39,10 @@ app.options("*", cors({ origin: true, credentials: true }));
 // ✅ rotas
 app.use(healthRoutes);
 app.use("/auth", authRoutes);
+
+app.use("/users", usersRoutes);        // ✅ /users/me/profile
+app.use("/presence", presenceRoutes);  // ✅ /presence/heartbeat e /presence/friends
+
 app.use("/arenas", arenasRoutes);
 app.use("/courts", courtsRoutes);
 app.use("/matches", matchesRoutes);
