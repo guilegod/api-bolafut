@@ -131,7 +131,8 @@ router.post("/forgot", async (req, res) => {
     });
 
     const appUrl = process.env.APP_URL || "http://localhost:5173";
-    const resetUrl = `${appUrl}/reset-password?token=${token}`;
+    const resetUrl = `${appUrl}/?token=${token}`;
+
 
     const { transporter, from, isReady } = makeMailer();
 

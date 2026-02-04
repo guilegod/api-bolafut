@@ -63,6 +63,18 @@ model User {
   stats MatchPlayerStat[]
   passwordResetTokens PasswordResetToken[]
 
+    // ✅ perfil público (social-lite)
+  profile Profile?
+
+  // ✅ pedidos de amizade (facebook)
+  friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
+
+  // ✅ amizades (par A/B)
+  friendshipsA Friendship[] @relation("FriendshipsA")
+  friendshipsB Friendship[] @relation("FriendshipsB")
+
+
 
 }
 model PasswordResetToken {
@@ -298,3 +310,70 @@ enum MatchStatus {
   CANCELED    // cancelada manual
   EXPIRED     // cancelada automaticamente (não fechou / passou do horário)
 }
+
+
+model Profile {
+  id            String   @id @default(cuid())
+
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // identidade pública
+  username      String?  @unique
+  bio           String?
+  city          String?
+  bairro        String?
+  coverImageUrl String?
+
+  // futebol (ou esportes) — MVP
+  position      String?  // "Meia", "Zagueiro", etc
+  level         String?  // "Iniciante", "Médio", "Avançado"
+  foot          String?  // "Destro", "Canhoto", "Ambidestro"
+
+  // tags (ex: ["Futsal", "Resenha", "FUT7"])
+  tags          Json?
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model FriendRequest {
+  id        String   @id @default(cuid())
+
+  fromId    String
+  toId      String
+
+  // pending/accepted/declined/canceled (você decide na API)
+  status    String   @default("pending")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  from      User     @relation("FriendRequestsSent", fields: [fromId], references: [id], onDelete: Cascade)
+  to        User     @relation("FriendRequestsReceived", fields: [toId], references: [id], onDelete: Cascade)
+
+  // evita spam duplicado
+  @@unique([fromId, toId])
+  @@index([toId])
+  @@index([fromId])
+  @@index([status])
+}
+
+model Friendship {
+  id        String   @id @default(cuid())
+
+  // guardamos sempre ordenado na aplicação (A < B)
+  userAId   String
+  userBId   String
+
+  createdAt DateTime @default(now())
+
+  userA     User     @relation("FriendshipsA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB     User     @relation("FriendshipsB", fields: [userBId], references: [id], onDelete: Cascade)
+
+  // garante que não existe amizade duplicada
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+}
+
