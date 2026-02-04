@@ -1,5 +1,5 @@
 // src/controllers/friends.controller.js
-import prisma from "../lib/prisma.js";
+import {prisma} from "../lib/prisma.js";
 
 // garante que a amizade sempre é salva como (menorId, maiorId)
 function normalizePair(a, b) {
