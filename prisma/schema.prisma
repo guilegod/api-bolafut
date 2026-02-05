@@ -135,31 +135,29 @@ model Court {
   city      String?
   address   String?
 
-  // ✅ pertence a uma Arena (novo)
-  arenaId   String?
-  arena     Arena?    @relation(fields: [arenaId], references: [id], onDelete: SetNull)
+  // ✅ pertence a uma Arena (OBRIGATÓRIO)
+  arenaId   String
+  arena     Arena     @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
-  // (LEGADO) dono direto da quadra (pra não quebrar o que já existe)
+  // (LEGADO) pode ficar por enquanto, mas NÃO USA mais no app novo
   arenaOwnerId String?
   arenaOwner   User?   @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
 
-  // ✅ extras da quadra (o que faz sentido ser “por quadra”)
-  capacity     Int      @default(14) // maxPlayers sugerido
-  pricePerHour Int?     // sugestão para calcular preço por jogador
+  capacity     Int      @default(14)
+  pricePerHour Int?
   covered      Boolean  @default(false)
-  surface      String?  // sintético, madeira, cimento, etc (opcional)
+  surface      String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   matches   Match[]
-
   reservations Reservation[]
-
 
   @@index([arenaId])
   @@index([arenaOwnerId])
 }
+
 
 model Match {
   id             String    @id @default(cuid())
@@ -170,32 +168,34 @@ model Match {
   organizerId    String
   organizer      User      @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
 
-  courtId        String?
-  court          Court?    @relation(fields: [courtId], references: [id], onDelete: SetNull)
+  // ✅ OBRIGATÓRIO
+  courtId        String
+  court          Court     @relation(fields: [courtId], references: [id], onDelete: Cascade)
 
   maxPlayers     Int       @default(14)
   pricePerPlayer Int       @default(30)
 
-  matchAddress   String?   // caso seja manual (sem court) ou override
+  // ❌ remove (ou mantém, mas NÃO usa). Recomendo remover pra não confundir:
+  // matchAddress   String?
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   presences      MatchPresence[]
   messages       MatchMessage[]
-  stats MatchPlayerStat[]
-  status     MatchStatus @default(SCHEDULED)
+  stats          MatchPlayerStat[]
 
-  minPlayers Int @default(0)     // 0 = não exige mínimo (ou defina 10/12 se quiser padrão)
+  status     MatchStatus @default(SCHEDULED)
+  minPlayers Int @default(0)
   startedAt  DateTime?
   finishedAt DateTime?
   canceledAt DateTime?
-
 
   @@index([date])
   @@index([organizerId])
   @@index([courtId])
 }
+
 
 model MatchPresence {
   id        String   @id @default(cuid())

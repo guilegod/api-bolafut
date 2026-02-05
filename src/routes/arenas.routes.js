@@ -33,14 +33,31 @@ const arenaCreateSchema = z.object({
 
 const arenaUpdateSchema = arenaCreateSchema.partial();
 
-// ✅ REUSO: include padrão da arena
+// ✅ include padrão da arena (perfil público TOP)
 const arenaInclude = {
   owner: { select: { id: true, name: true } },
-  courts: { select: { id: true, name: true, type: true, city: true, address: true } },
+  courts: {
+    select: {
+      id: true,
+      name: true,
+      type: true,
+      city: true,
+      address: true,
+
+      // ✅ campos premium (se existirem no seu schema)
+      pricePerHour: true,
+      capacity: true,
+      covered: true,
+      surface: true,
+
+      arenaId: true,
+    },
+    orderBy: { createdAt: "desc" },
+  },
 };
 
 // ======================================================
-// ✅ GET /arenas — público (pra feed/home)
+// ✅ GET /arenas — público (home/feed)
 // ======================================================
 router.get("/", async (req, res) => {
   try {
@@ -61,8 +78,8 @@ router.get("/", async (req, res) => {
 });
 
 // ======================================================
-// ✅ GET /arenas/mine — auth (dono/admin)
-// IMPORTANTE: precisa vir ANTES do "/:id"
+// ✅ GET /arenas/mine — auth (arena_owner/admin)
+// IMPORTANTE: antes do "/:id"
 // ======================================================
 router.get("/mine", authRequired, async (req, res) => {
   try {
@@ -87,7 +104,7 @@ router.get("/mine", authRequired, async (req, res) => {
       }))
     );
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao carregar sua arena", error: String(e) });
+    return res.status(500).json({ message: "Erro ao carregar suas arenas", error: String(e) });
   }
 });
 
@@ -112,7 +129,7 @@ router.get("/slug/:slug", async (req, res) => {
 });
 
 // ======================================================
-// ✅ POST /arenas/setup — cria a 1ª arena automaticamente pro dono
+// ✅ POST /arenas/setup — cria 1ª arena pro dono (opcional)
 // ======================================================
 router.post("/setup", authRequired, async (req, res) => {
   try {
@@ -122,17 +139,13 @@ router.post("/setup", authRequired, async (req, res) => {
       return res.status(403).json({ message: "Sem permissão" });
     }
 
-    // se já existe, devolve
     const existing = await prisma.arena.findFirst({
       where: { ownerId: user.id },
       include: arenaInclude,
     });
 
-    if (existing) {
-      return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
-    }
+    if (existing) return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
 
-    // cria uma padrão
     const baseName = (req.body?.name || `Arena de ${user.name || "Dono"}`).toString();
     const baseSlug = slugify(baseName);
     const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
@@ -206,7 +219,6 @@ router.post("/", authRequired, async (req, res) => {
       },
     });
 
-    // ✅ upload foto (opcional)
     let imageUrl = null;
     if (data.imageBase64) {
       imageUrl = await uploadArenaImageBase64({
@@ -218,10 +230,10 @@ router.post("/", authRequired, async (req, res) => {
 
     const arena = await prisma.arena.findUnique({
       where: { id: created.id },
-      include: { courts: true, owner: { select: { id: true, name: true } } },
+      include: arenaInclude,
     });
 
-    return res.status(201).json(arena);
+    return res.status(201).json({ ...arena, courtsCount: arena?.courts?.length || 0 });
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
   }
@@ -248,6 +260,12 @@ router.patch("/:id", authRequired, async (req, res) => {
 
     const data = arenaUpdateSchema.parse(req.body);
 
+    // ✅ se mudar nome: atualiza slug também (novo slug + random pra evitar colisão)
+    const nextSlug =
+      data.name && data.name.trim()
+        ? `${slugify(data.name)}-${Math.random().toString(16).slice(2, 6)}`
+        : arena.slug;
+
     let nextImageUrl = arena.imageUrl;
     if (data.imageBase64) {
       nextImageUrl = await uploadArenaImageBase64({ arenaId: id, base64: data.imageBase64 });
@@ -256,7 +274,7 @@ router.patch("/:id", authRequired, async (req, res) => {
     const updated = await prisma.arena.update({
       where: { id },
       data: {
-        ...(data.name ? { name: data.name } : {}),
+        ...(data.name ? { name: data.name, slug: nextSlug } : {}),
         ...(data.city !== undefined ? { city: data.city } : {}),
         ...(data.district !== undefined ? { district: data.district } : {}),
         ...(data.address !== undefined ? { address: data.address } : {}),
@@ -264,13 +282,10 @@ router.patch("/:id", authRequired, async (req, res) => {
         ...(data.closeTime !== undefined ? { closeTime: data.closeTime } : {}),
         ...(data.imageBase64 ? { imageUrl: nextImageUrl } : {}),
       },
-      include: {
-        owner: { select: { id: true, name: true } },
-        courts: true,
-      },
+      include: arenaInclude,
     });
 
-    return res.json(updated);
+    return res.json({ ...updated, courtsCount: updated.courts?.length || 0 });
   } catch (e) {
     return res.status(400).json({ message: "Dados inválidos", error: String(e) });
   }

@@ -7,7 +7,7 @@ const router = Router();
 
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_v6_fixed_autoexpire_list_full" });
+  res.json({ ok: true, version: "matches_routes_v7_NO_MANUAL_hierarchy_locked" });
 });
 
 function isRole(user, roles = []) {
@@ -17,7 +17,7 @@ function isRole(user, roles = []) {
 const includePremium = {
   court: {
     include: {
-      arena: true, // ✅ importante pro arena_owner novo (court.arena.ownerId)
+      arena: true, // ✅ importante (court.arena.ownerId)
     },
   },
   presences: {
@@ -49,14 +49,16 @@ const matchCreateSchema = z.object({
       "OUTRO",
     ])
     .default("FUT7"),
-  courtId: z.string().optional().nullable(),
-  matchAddress: z.string().optional().nullable(),
+
+  // ✅ OBRIGATÓRIO (sem modo manual)
+  courtId: z.string().min(3),
+
   maxPlayers: z.number().int().min(2).max(40).optional(),
   pricePerPlayer: z.number().int().min(0).max(9999).optional(),
-  minPlayers: z.number().int().min(0).max(40).optional(), // ✅ novo (0 = sem mínimo)
+  minPlayers: z.number().int().min(0).max(40).optional(),
 });
 
-// helpers (conflito)
+// helpers
 function addMinutes(date, minutes) {
   const d = new Date(date);
   d.setMinutes(d.getMinutes() + minutes);
@@ -67,7 +69,7 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
 }
 
 /* ======================================================
-   ✅ STATS HELPERS (Oficial / Não-oficial)
+   ✅ STATS HELPERS
    ====================================================== */
 
 async function canEditOfficialStats(user, matchId) {
@@ -88,10 +90,8 @@ async function canEditOfficialStats(user, matchId) {
 
   if (!match) return false;
 
-  // organizador da partida
   if (user?.role === "owner" && match.organizerId === user.id) return true;
 
-  // dono da arena (legado ou novo)
   if (user?.role === "arena_owner") {
     const legacyOk = match.court?.arenaOwnerId === user.id;
     const newOk = match.court?.arena?.ownerId === user.id;
@@ -117,11 +117,10 @@ const statEventSchema = z.object({
 });
 
 /* ======================================================
-   ✅ MATCH STATUS HELPERS (start/finish/cancel/auto-expire)
+   ✅ MATCH STATUS HELPERS
    ====================================================== */
 
 async function canManageMatch(user, matchId) {
-  // admin sempre
   if (user?.role === "admin") return true;
 
   const match = await prisma.match.findUnique({
@@ -139,10 +138,8 @@ async function canManageMatch(user, matchId) {
 
   if (!match) return false;
 
-  // organizador controla
   if (user?.role === "owner" && match.organizerId === user.id) return true;
 
-  // arena_owner controla se for da arena dele (legado ou novo)
   if (user?.role === "arena_owner") {
     const legacyOk = match.court?.arenaOwnerId === user.id;
     const newOk = match.court?.arena?.ownerId === user.id;
@@ -154,23 +151,14 @@ async function canManageMatch(user, matchId) {
 
 /**
  * Auto-expire:
- * - se status = SCHEDULED
- * - e passou do horário (com folga de 30min)
- * - e minPlayers > 0
- * - e presences < minPlayers
- * => status vira EXPIRED e canceledAt é setado
- *
- * ✅ Fix importante:
- * Quando NÃO expira, NUNCA devolve objeto "capado".
- *
- * opts:
- * - returnUpdatedOnly: se true, retorna null quando NÃO houve mudança; retorna match completo quando mudou.
- * - currentMatch: se você já tem o match completo (includePremium), passa aqui pra evitar query extra.
+ * - status = SCHEDULED
+ * - passou do horário + 30min
+ * - minPlayers > 0
+ * - presences < minPlayers
  */
 async function maybeAutoExpireMatch(matchId, opts = {}) {
   const { returnUpdatedOnly = false, currentMatch = null } = opts;
 
-  // Se já temos o match completo, extraímos só o necessário sem query extra
   const base =
     currentMatch && currentMatch.id === matchId
       ? {
@@ -210,7 +198,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
   }
 
   const now = new Date();
-  const deadline = addMinutes(new Date(base.date), 30); // 30min depois do start
+  const deadline = addMinutes(new Date(base.date), 30);
   if (now <= deadline) {
     if (returnUpdatedOnly) return null;
     return currentMatch
@@ -226,7 +214,6 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
       : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
   }
 
-  // ✅ expira (aqui SIM muda)
   const updated = await prisma.match.update({
     where: { id: matchId },
     data: {
@@ -266,7 +253,6 @@ router.get("/", authRequired, async (req, res) => {
       include: includePremium,
     });
 
-    // ✅ aplica auto-expire “na leitura” SEM quebrar payload
     const updatedMatches = [];
     for (const m of matches) {
       if (m?.id) {
@@ -287,13 +273,12 @@ router.get("/", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   GET /matches/:id (detalhe + auto-expire)
+   GET /matches/:id
    ====================================================== */
 router.get("/:id", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
-    // ✅ agora sempre retorna match completo (expirado ou não)
     const match = await maybeAutoExpireMatch(matchId, {
       returnUpdatedOnly: false,
       currentMatch: null,
@@ -307,7 +292,7 @@ router.get("/:id", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   POST /matches (criar partida)
+   POST /matches (criar partida) — SEM MANUAL
    ====================================================== */
 router.post("/", authRequired, async (req, res) => {
   try {
@@ -318,29 +303,7 @@ router.post("/", authRequired, async (req, res) => {
     }
 
     const data = matchCreateSchema.parse(req.body);
-
-    const courtIdRaw = data.courtId ?? null;
-    const courtIdStr = courtIdRaw ? String(courtIdRaw).trim() : "";
-
-    const isManual =
-      !courtIdStr ||
-      ["null", "none", "undefined", "manual", "__manual__"].includes(courtIdStr.toLowerCase());
-
-    // arena_owner não pode criar partida manual
-    if (isManual && isRole(user, ["arena_owner"])) {
-      return res.status(403).json({
-        message: "Dono de arena não pode criar partida em local manual",
-      });
-    }
-
-    const addr = (data.matchAddress ?? "").toString().trim() || null;
-
-    if (isManual && !addr) {
-      return res.status(400).json({
-        message: "Dados inválidos",
-        error: "matchAddress é obrigatório quando courtId é null.",
-      });
-    }
+    const courtIdStr = String(data.courtId || "").trim();
 
     const matchStart = new Date(data.date);
     if (Number.isNaN(matchStart.getTime())) {
@@ -349,74 +312,72 @@ router.post("/", authRequired, async (req, res) => {
 
     const matchEnd = addMinutes(matchStart, 60);
 
-    if (!isManual) {
-      const court = await prisma.court.findUnique({
-        where: { id: courtIdStr },
-        include: { arena: true },
-      });
+    const court = await prisma.court.findUnique({
+      where: { id: courtIdStr },
+      include: { arena: true },
+    });
 
-      if (!court) {
-        return res.status(400).json({ message: "Dados inválidos", error: "courtId não existe." });
-      }
+    if (!court) {
+      return res.status(400).json({ message: "Dados inválidos", error: "courtId não existe." });
+    }
 
-      // arena_owner só cria nas quadras dele (legado ou novo)
-      if (isRole(user, ["arena_owner"])) {
-        const legacyOk = court.arenaOwnerId === user.id;
-        const newOk = court.arena?.ownerId === user.id;
-        if (!legacyOk && !newOk) {
-          return res.status(403).json({
-            message: "Você só pode criar partidas nas suas próprias quadras",
-          });
-        }
-      }
-
-      // 1) Conflict com Reservation (não cancelada)
-      const conflictReservation = await prisma.reservation.findFirst({
-        where: {
-          courtId: courtIdStr,
-          status: { not: "CANCELED" },
-          startAt: { lt: matchEnd },
-          endAt: { gt: matchStart },
-        },
-        select: { id: true, startAt: true, endAt: true, status: true, paymentStatus: true },
-      });
-
-      if (conflictReservation) {
-        return res.status(409).json({
-          message: "Horário já reservado (Reservation)",
-          conflict: { type: "reservation", ...conflictReservation },
+    // arena_owner só cria nas quadras dele (legado ou novo)
+    if (isRole(user, ["arena_owner"])) {
+      const legacyOk = court.arenaOwnerId === user.id;
+      const newOk = court.arena?.ownerId === user.id;
+      if (!legacyOk && !newOk) {
+        return res.status(403).json({
+          message: "Você só pode criar partidas nas suas próprias quadras",
         });
       }
+    }
 
-      // 2) Conflict com outro Match (assumindo 60min)
-      const windowStart = addMinutes(matchStart, -180);
-      const windowEnd = addMinutes(matchEnd, 180);
+    // 1) Conflict com Reservation (não cancelada)
+    const conflictReservation = await prisma.reservation.findFirst({
+      where: {
+        courtId: courtIdStr,
+        status: { not: "CANCELED" },
+        startAt: { lt: matchEnd },
+        endAt: { gt: matchStart },
+      },
+      select: { id: true, startAt: true, endAt: true, status: true, paymentStatus: true },
+    });
 
-      const nearMatches = await prisma.match.findMany({
-        where: {
-          courtId: courtIdStr,
-          date: { gte: windowStart, lte: windowEnd },
+    if (conflictReservation) {
+      return res.status(409).json({
+        message: "Horário já reservado (Reservation)",
+        conflict: { type: "reservation", ...conflictReservation },
+      });
+    }
+
+    // 2) Conflict com outro Match (60min)
+    const windowStart = addMinutes(matchStart, -180);
+    const windowEnd = addMinutes(matchEnd, 180);
+
+    const nearMatches = await prisma.match.findMany({
+      where: {
+        courtId: courtIdStr,
+        date: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true, date: true, title: true },
+    });
+
+    const conflictMatch = nearMatches.find((m) => {
+      const mStart = new Date(m.date);
+      const mEnd = addMinutes(mStart, 60);
+      return overlaps(matchStart, matchEnd, mStart, mEnd);
+    });
+
+    if (conflictMatch) {
+      return res.status(409).json({
+        message: "Horário já ocupado por outra partida (Match)",
+        conflict: {
+          type: "match",
+          id: conflictMatch.id,
+          date: conflictMatch.date,
+          title: conflictMatch.title,
         },
-        select: { id: true, date: true, title: true },
       });
-
-      const conflictMatch = nearMatches.find((m) => {
-        const mStart = new Date(m.date);
-        const mEnd = addMinutes(mStart, 60);
-        return overlaps(matchStart, matchEnd, mStart, mEnd);
-      });
-
-      if (conflictMatch) {
-        return res.status(409).json({
-          message: "Horário já ocupado por outra partida (Match)",
-          conflict: {
-            type: "match",
-            id: conflictMatch.id,
-            date: conflictMatch.date,
-            title: conflictMatch.title,
-          },
-        });
-      }
     }
 
     const match = await prisma.match.create({
@@ -425,8 +386,10 @@ router.post("/", authRequired, async (req, res) => {
         date: matchStart,
         type: data.type,
         organizerId: user.id,
-        courtId: isManual ? null : courtIdStr,
-        matchAddress: addr,
+
+        // ✅ obrigatório
+        courtId: courtIdStr,
+
         maxPlayers: data.maxPlayers ?? 14,
         minPlayers: data.minPlayers ?? 0,
         pricePerPlayer: data.pricePerPlayer ?? 30,
@@ -556,27 +519,20 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
     const matchId = String(req.params.id || "").trim();
     const data = statEventSchema.parse(req.body);
 
-    // ✅ Não-oficial: só o próprio jogador pode lançar pra si
     if (data.mode === "unofficial" && data.userId !== user.id) {
       return res.status(403).json({
         message: "Não-oficial só pode ser lançado pelo próprio jogador (pra evitar troll).",
       });
     }
 
-    // ✅ Não-oficial: precisa estar presente
     if (data.mode === "unofficial") {
       const inMatch = await isUserInMatch(user.id, matchId);
-      if (!inMatch) {
-        return res.status(403).json({ message: "Você não está presente nesta partida" });
-      }
+      if (!inMatch) return res.status(403).json({ message: "Você não está presente nesta partida" });
     }
 
-    // ✅ Oficial: precisa permissão
     if (data.mode === "official") {
       const canEdit = await canEditOfficialStats(user, matchId);
-      if (!canEdit) {
-        return res.status(403).json({ message: "Sem permissão para lançar estatística oficial" });
-      }
+      if (!canEdit) return res.status(403).json({ message: "Sem permissão para lançar estatística oficial" });
     }
 
     const updateFields =
@@ -597,7 +553,6 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
       assistsUnofficial: 0,
     };
 
-    // cria já com o delta
     if (data.type === "goal" && data.mode === "official") createdBase.goalsOfficial = Math.max(0, data.delta);
     if (data.type === "goal" && data.mode === "unofficial") createdBase.goalsUnofficial = Math.max(0, data.delta);
     if (data.type === "assist" && data.mode === "official") createdBase.assistsOfficial = Math.max(0, data.delta);
@@ -610,7 +565,6 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
       include: { user: { select: { id: true, name: true } } },
     });
 
-    // trava pra nunca ficar negativo
     const fixed = await prisma.matchPlayerStat.update({
       where: { id: stat.id },
       data: {
@@ -629,8 +583,7 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   PRESENÇA (LEGACY)
-   POST /matches/:id  -> confirmar presença (compat)
+   PRESENÇA (compat + oficial)
    ====================================================== */
 
 router.post("/:id", authRequired, async (req, res) => {
@@ -690,12 +643,6 @@ router.delete("/:id", authRequired, async (req, res) => {
   }
 });
 
-/* ======================================================
-   PRESENÇA (OFICIAL)
-   POST   /matches/:id/join
-   DELETE /matches/:id/join
-   ====================================================== */
-
 router.post("/:id/join", authRequired, async (req, res) => {
   try {
     const user = req.user;
@@ -754,8 +701,6 @@ router.delete("/:id/join", authRequired, async (req, res) => {
 
 /* ======================================================
    EXPIRE MANUAL
-   PATCH /matches/:id/expire
-   (admin / owner / organizer / arena_owner da arena)
    ====================================================== */
 router.patch("/:id/expire", authRequired, async (req, res) => {
   try {
@@ -781,8 +726,6 @@ router.patch("/:id/expire", authRequired, async (req, res) => {
 
 /* ======================================================
    💬 CHAT DA PARTIDA (MatchMessage)
-   - Schema usa: text (não content)
-   - Permissão: admin / organizer / arena_owner (manage) OU usuário presente
    ====================================================== */
 
 const messageSchema = z.object({
@@ -792,11 +735,9 @@ const messageSchema = z.object({
 async function canAccessChat(user, matchId) {
   if (user?.role === "admin") return true;
 
-  // organizer/arena_owner da partida podem ver mesmo sem presença
   const manage = await canManageMatch(user, matchId);
   if (manage) return true;
 
-  // usuário comum: precisa estar presente
   const inMatch = await isUserInMatch(user?.id, matchId);
   return Boolean(inMatch);
 }
@@ -838,7 +779,7 @@ router.post("/:id/messages", authRequired, async (req, res) => {
       data: {
         matchId,
         userId,
-        text: data.text.trim(), // ✅ campo correto do schema
+        text: data.text.trim(),
       },
       include: {
         user: { select: { id: true, name: true, imageUrl: true, role: true } },
@@ -850,6 +791,7 @@ router.post("/:id/messages", authRequired, async (req, res) => {
     return res.status(400).json({ message: "Erro ao enviar mensagem", error: String(e) });
   }
 });
+
 // GET /matches/:id/messages/since?after=ISO
 router.get("/:id/messages/since", authRequired, async (req, res) => {
   try {
@@ -860,9 +802,8 @@ router.get("/:id/messages/since", authRequired, async (req, res) => {
     const afterRaw = String(req.query.after || "").trim();
     const after = afterRaw ? new Date(afterRaw) : null;
 
-    const where = after && !Number.isNaN(after.getTime())
-      ? { matchId, createdAt: { gt: after } }
-      : { matchId };
+    const where =
+      after && !Number.isNaN(after.getTime()) ? { matchId, createdAt: { gt: after } } : { matchId };
 
     const messages = await prisma.matchMessage.findMany({
       where,
@@ -876,6 +817,5 @@ router.get("/:id/messages/since", authRequired, async (req, res) => {
     return res.status(500).json({ message: "Erro ao buscar mensagens", error: String(e) });
   }
 });
-
 
 export default router;
