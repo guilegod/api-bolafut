@@ -18,7 +18,13 @@ function slugify(str) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "")
-    .slice(0, 80); // um pouco maior pra não cortar slug com sufixo
+    .slice(0, 80);
+}
+
+function makeSlugFromName(name) {
+  const base = slugify(name);
+  const rnd = Math.random().toString(16).slice(2, 6);
+  return `${base}-${rnd}`;
 }
 
 const arenaCreateSchema = z.object({
@@ -26,9 +32,9 @@ const arenaCreateSchema = z.object({
   city: z.string().optional().nullable(),
   district: z.string().optional().nullable(),
   address: z.string().optional().nullable(),
-  openTime: z.string().optional().nullable(), // "09:00"
+  openTime: z.string().optional().nullable(),  // "09:00"
   closeTime: z.string().optional().nullable(), // "23:00"
-  imageBase64: z.string().optional().nullable(), // data:image/... base64
+  imageBase64: z.string().optional().nullable(), // data:image/...;base64,...
 });
 
 const arenaUpdateSchema = arenaCreateSchema.partial();
@@ -43,27 +49,16 @@ const arenaInclude = {
       type: true,
       city: true,
       address: true,
-
-      // ✅ campos premium (se existirem no seu schema)
       pricePerHour: true,
       capacity: true,
       covered: true,
       surface: true,
-
       arenaId: true,
     },
-    // ⚠️ se seu model Court NÃO tem createdAt, isso quebra.
-    // Se tiver, beleza. Se não tiver, troque por: orderBy: { name: "asc" }
-    orderBy: { createdAt: "desc" },
+    // Mais seguro que createdAt (caso Court não tenha createdAt)
+    orderBy: { name: "asc" },
   },
 };
-
-// helper: gera slug com sufixo curto
-function makeSlug(baseName) {
-  const base = slugify(baseName);
-  const rnd = Math.random().toString(16).slice(2, 6);
-  return `${base}-${rnd}`;
-}
 
 // ======================================================
 // ✅ GET /arenas — público (home/feed)
@@ -119,14 +114,13 @@ router.get("/mine", authRequired, async (req, res) => {
 
 // ======================================================
 // ✅ GET /arenas/slug/:slug — público (perfil por slug)
-// ✅ CORRIGIDO: busca por slug raw + slugify(raw) + insensitive
+// ✅ CORRIGIDO: tenta slug raw + slugify(raw) e insensitive
 // ======================================================
 router.get("/slug/:slug", async (req, res) => {
   try {
     const slugRaw = String(req.params.slug || "").trim();
     const slugNorm = slugify(slugRaw);
 
-    // tenta achar por qualquer variação segura
     const arena = await prisma.arena.findFirst({
       where: {
         OR: [
@@ -148,7 +142,7 @@ router.get("/slug/:slug", async (req, res) => {
 });
 
 // ======================================================
-// ✅ POST /arenas/setup — cria 1ª arena pro dono (opcional)
+// ✅ POST /arenas/setup — cria 1ª arena pro dono (se não existir)
 // ======================================================
 router.post("/setup", authRequired, async (req, res) => {
   try {
@@ -163,14 +157,17 @@ router.post("/setup", authRequired, async (req, res) => {
       include: arenaInclude,
     });
 
-    if (existing) return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
+    if (existing) {
+      return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
+    }
 
     const baseName = (req.body?.name || `Arena de ${user.name || "Dono"}`).toString();
+    const slug = makeSlugFromName(baseName);
 
     const created = await prisma.arena.create({
       data: {
         name: baseName,
-        slug: makeSlug(baseName),
+        slug,
         city: req.body?.city ?? null,
         district: req.body?.district ?? null,
         address: req.body?.address ?? null,
@@ -219,11 +216,12 @@ router.post("/", authRequired, async (req, res) => {
     }
 
     const data = arenaCreateSchema.parse(req.body);
+    const slug = makeSlugFromName(data.name);
 
     const created = await prisma.arena.create({
       data: {
         name: data.name,
-        slug: makeSlug(data.name),
+        slug,
         city: data.city ?? null,
         district: data.district ?? null,
         address: data.address ?? null,
@@ -274,10 +272,10 @@ router.patch("/:id", authRequired, async (req, res) => {
 
     const data = arenaUpdateSchema.parse(req.body);
 
-    // ✅ se mudar nome: atualiza slug também
+    // se mudar nome, muda slug (novo) pra evitar colisão
     const nextSlug =
       data.name && data.name.trim()
-        ? makeSlug(data.name)
+        ? makeSlugFromName(data.name)
         : arena.slug;
 
     let nextImageUrl = arena.imageUrl;
