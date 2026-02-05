@@ -18,7 +18,7 @@ function slugify(str) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "")
-    .slice(0, 50);
+    .slice(0, 80); // um pouco maior pra não cortar slug com sufixo
 }
 
 const arenaCreateSchema = z.object({
@@ -33,7 +33,7 @@ const arenaCreateSchema = z.object({
 
 const arenaUpdateSchema = arenaCreateSchema.partial();
 
-// ✅ include padrão da arena (perfil público TOP)
+// ✅ include padrão (perfil público TOP)
 const arenaInclude = {
   owner: { select: { id: true, name: true } },
   courts: {
@@ -52,9 +52,18 @@ const arenaInclude = {
 
       arenaId: true,
     },
+    // ⚠️ se seu model Court NÃO tem createdAt, isso quebra.
+    // Se tiver, beleza. Se não tiver, troque por: orderBy: { name: "asc" }
     orderBy: { createdAt: "desc" },
   },
 };
+
+// helper: gera slug com sufixo curto
+function makeSlug(baseName) {
+  const base = slugify(baseName);
+  const rnd = Math.random().toString(16).slice(2, 6);
+  return `${base}-${rnd}`;
+}
 
 // ======================================================
 // ✅ GET /arenas — público (home/feed)
@@ -110,17 +119,27 @@ router.get("/mine", authRequired, async (req, res) => {
 
 // ======================================================
 // ✅ GET /arenas/slug/:slug — público (perfil por slug)
+// ✅ CORRIGIDO: busca por slug raw + slugify(raw) + insensitive
 // ======================================================
 router.get("/slug/:slug", async (req, res) => {
   try {
-    const slug = slugify(req.params.slug);
+    const slugRaw = String(req.params.slug || "").trim();
+    const slugNorm = slugify(slugRaw);
 
+    // tenta achar por qualquer variação segura
     const arena = await prisma.arena.findFirst({
-      where: { slug },
+      where: {
+        OR: [
+          { slug: slugRaw },
+          { slug: slugNorm },
+          { slug: { equals: slugRaw, mode: "insensitive" } },
+          { slug: { equals: slugNorm, mode: "insensitive" } },
+        ],
+      },
       include: arenaInclude,
     });
 
-    if (!arena) return res.status(404).json({ message: "Arena não encontrada" });
+    if (!arena) return res.status(404).json({ message: "Arena não encontrada", slug: slugRaw });
 
     return res.json({ ...arena, courtsCount: arena.courts?.length || 0 });
   } catch (e) {
@@ -147,13 +166,11 @@ router.post("/setup", authRequired, async (req, res) => {
     if (existing) return res.json({ ...existing, courtsCount: existing.courts?.length || 0 });
 
     const baseName = (req.body?.name || `Arena de ${user.name || "Dono"}`).toString();
-    const baseSlug = slugify(baseName);
-    const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
 
     const created = await prisma.arena.create({
       data: {
         name: baseName,
-        slug,
+        slug: makeSlug(baseName),
         city: req.body?.city ?? null,
         district: req.body?.district ?? null,
         address: req.body?.address ?? null,
@@ -203,13 +220,10 @@ router.post("/", authRequired, async (req, res) => {
 
     const data = arenaCreateSchema.parse(req.body);
 
-    const baseSlug = slugify(data.name);
-    const slug = `${baseSlug}-${Math.random().toString(16).slice(2, 6)}`;
-
     const created = await prisma.arena.create({
       data: {
         name: data.name,
-        slug,
+        slug: makeSlug(data.name),
         city: data.city ?? null,
         district: data.district ?? null,
         address: data.address ?? null,
@@ -260,10 +274,10 @@ router.patch("/:id", authRequired, async (req, res) => {
 
     const data = arenaUpdateSchema.parse(req.body);
 
-    // ✅ se mudar nome: atualiza slug também (novo slug + random pra evitar colisão)
+    // ✅ se mudar nome: atualiza slug também
     const nextSlug =
       data.name && data.name.trim()
-        ? `${slugify(data.name)}-${Math.random().toString(16).slice(2, 6)}`
+        ? makeSlug(data.name)
         : arena.slug;
 
     let nextImageUrl = arena.imageUrl;
