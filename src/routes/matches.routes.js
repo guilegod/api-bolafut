@@ -7,12 +7,18 @@ const router = Router();
 
 // 🔎 Rota de verificação de versão (pra testar deploy)
 router.get("/__version", (req, res) => {
-  res.json({ ok: true, version: "matches_routes_v7_NO_MANUAL_hierarchy_locked" });
+  res.json({ ok: true, version: "matches_routes_v8_peladas_secure_join_max" });
 });
 
 function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
+
+/* ======================================================
+   INCLUDES
+   - includePremium: rotas autenticadas (pode ter email)
+   - includePublic: rotas públicas (SEM email)
+   ====================================================== */
 
 const includePremium = {
   court: {
@@ -30,6 +36,27 @@ const includePremium = {
   },
   organizer: { select: { id: true, name: true, email: true, role: true } },
 };
+
+const includePublic = {
+  court: {
+    include: {
+      arena: true,
+    },
+  },
+  presences: {
+    select: {
+      id: true,
+      userId: true,
+      createdAt: true,
+      user: { select: { id: true, name: true, role: true } }, // ✅ sem email
+    },
+  },
+  organizer: { select: { id: true, name: true, role: true } }, // ✅ sem email
+};
+
+/* ======================================================
+   SCHEMAS
+   ====================================================== */
 
 const matchCreateSchema = z.object({
   title: z.string().min(2),
@@ -53,9 +80,13 @@ const matchCreateSchema = z.object({
   // ✅ OBRIGATÓRIO (sem modo manual)
   courtId: z.string().min(3),
 
-  maxPlayers: z.number().int().min(2).max(40).optional(),
-  pricePerPlayer: z.number().int().min(0).max(9999).optional(),
-  minPlayers: z.number().int().min(0).max(40).optional(),
+  // ✅ Diferencia reserva vs pelada (ideal ter Match.kind no schema)
+  kind: z.enum(["BOOKING", "PELADA"]).optional(),
+
+  // ✅ aceita string vinda do front ("14") e converte em number
+  maxPlayers: z.coerce.number().int().min(2).max(40).optional(),
+  pricePerPlayer: z.coerce.number().int().min(0).max(9999).optional(),
+  minPlayers: z.coerce.number().int().min(0).max(40).optional(),
 });
 
 // helpers
@@ -157,7 +188,7 @@ async function canManageMatch(user, matchId) {
  * - presences < minPlayers
  */
 async function maybeAutoExpireMatch(matchId, opts = {}) {
-  const { returnUpdatedOnly = false, currentMatch = null } = opts;
+  const { returnUpdatedOnly = false, currentMatch = null, include = includePremium } = opts;
 
   const base =
     currentMatch && currentMatch.id === matchId
@@ -186,7 +217,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
     if (returnUpdatedOnly) return null;
     return currentMatch
       ? currentMatch
-      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+      : await prisma.match.findUnique({ where: { id: matchId }, include });
   }
 
   const minPlayers = Number(base.minPlayers || 0);
@@ -194,7 +225,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
     if (returnUpdatedOnly) return null;
     return currentMatch
       ? currentMatch
-      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+      : await prisma.match.findUnique({ where: { id: matchId }, include });
   }
 
   const now = new Date();
@@ -203,7 +234,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
     if (returnUpdatedOnly) return null;
     return currentMatch
       ? currentMatch
-      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+      : await prisma.match.findUnique({ where: { id: matchId }, include });
   }
 
   const joined = base.presences?.length || 0;
@@ -211,7 +242,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
     if (returnUpdatedOnly) return null;
     return currentMatch
       ? currentMatch
-      : await prisma.match.findUnique({ where: { id: matchId }, include: includePremium });
+      : await prisma.match.findUnique({ where: { id: matchId }, include });
   }
 
   const updated = await prisma.match.update({
@@ -220,14 +251,196 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
       status: "EXPIRED",
       canceledAt: new Date(),
     },
-    include: includePremium,
+    include,
   });
 
   return updated;
 }
 
 /* ======================================================
-   GET /matches
+   ✅ PELADAS (públicas)
+   - ESTE BLOCO PRECISA VIR ANTES DE "/:id"
+   ====================================================== */
+
+// GET /matches/peladas (public)
+router.get("/peladas", async (req, res) => {
+  try {
+    const arenaId = req.query.arenaId ? String(req.query.arenaId) : null;
+    const arenaSlug = req.query.slug ? String(req.query.slug) : null;
+    const courtId = req.query.courtId ? String(req.query.courtId) : null;
+
+    const dateStr = req.query.date ? String(req.query.date) : null; // "YYYY-MM-DD" ou ISO
+    const fromStr = req.query.from ? String(req.query.from) : null;
+    const toStr = req.query.to ? String(req.query.to) : null;
+
+    let from = null;
+    let to = null;
+
+    if (fromStr) from = new Date(fromStr);
+    if (toStr) to = new Date(toStr);
+
+    if (!from && !to && dateStr) {
+      const d = new Date(dateStr);
+      if (!Number.isNaN(d.getTime())) {
+        const start = new Date(d);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(d);
+        end.setHours(23, 59, 59, 999);
+        from = start;
+        to = end;
+      }
+    }
+
+    const where = {
+      kind: "PELADA",
+      ...(courtId ? { courtId } : {}),
+      ...(from || to
+        ? { date: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } }
+        : {}),
+      ...(arenaId || arenaSlug
+        ? {
+            court: {
+              arena: {
+                ...(arenaId ? { id: arenaId } : {}),
+                ...(arenaSlug ? { slug: arenaSlug } : {}),
+              },
+            },
+          }
+        : {}),
+    };
+
+    const peladas = await prisma.match.findMany({
+      where,
+      orderBy: { date: "asc" },
+      include: includePublic, // ✅ sem email
+      take: 200,
+    });
+
+    const updated = [];
+    for (const m of peladas) {
+      const maybe = await maybeAutoExpireMatch(m.id, {
+        returnUpdatedOnly: false,
+        currentMatch: m,
+        include: includePublic,
+      });
+      updated.push(maybe || m);
+    }
+
+    return res.json(updated);
+  } catch (e) {
+    return res.status(500).json({ message: "Erro ao listar peladas", error: String(e) });
+  }
+});
+
+// POST /matches/peladas (auth) — cria pelada (qualquer usuário logado)
+router.post("/peladas", authRequired, async (req, res) => {
+  try {
+    const user = req.user;
+    const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
+
+    const courtIdStr = String(data.courtId || "").trim();
+
+    const matchStart = new Date(data.date);
+    if (Number.isNaN(matchStart.getTime())) {
+      return res.status(400).json({ message: "Dados inválidos", error: "date inválido." });
+    }
+
+    const matchEnd = addMinutes(matchStart, 60);
+
+    const court = await prisma.court.findUnique({
+      where: { id: courtIdStr },
+      include: { arena: true },
+    });
+
+    if (!court) {
+      return res.status(400).json({ message: "Dados inválidos", error: "courtId não existe." });
+    }
+
+    // Conflito com Reservation
+    const conflictReservation = await prisma.reservation.findFirst({
+      where: {
+        courtId: courtIdStr,
+        status: { not: "CANCELED" },
+        startAt: { lt: matchEnd },
+        endAt: { gt: matchStart },
+      },
+      select: { id: true, startAt: true, endAt: true, status: true, paymentStatus: true },
+    });
+
+    if (conflictReservation) {
+      return res.status(409).json({
+        message: "Horário já reservado (Reservation)",
+        conflict: { type: "reservation", ...conflictReservation },
+      });
+    }
+
+    // Conflito com Match (pelada ou booking)
+    const windowStart = addMinutes(matchStart, -180);
+    const windowEnd = addMinutes(matchEnd, 180);
+
+    const nearMatches = await prisma.match.findMany({
+      where: {
+        courtId: courtIdStr,
+        date: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true, date: true, title: true },
+    });
+
+    const conflictMatch = nearMatches.find((m) => {
+      const mStart = new Date(m.date);
+      const mEnd = addMinutes(mStart, 60);
+      return overlaps(matchStart, matchEnd, mStart, mEnd);
+    });
+
+    if (conflictMatch) {
+      return res.status(409).json({
+        message: "Horário já ocupado por outra partida (Match)",
+        conflict: {
+          type: "match",
+          id: conflictMatch.id,
+          date: conflictMatch.date,
+          title: conflictMatch.title,
+        },
+      });
+    }
+
+    const match = await prisma.match.create({
+      data: {
+        title: data.title,
+        date: matchStart,
+        type: data.type,
+        organizerId: user.id,
+        courtId: courtIdStr,
+
+        maxPlayers: data.maxPlayers ?? 14,
+        minPlayers: data.minPlayers ?? 0,
+        pricePerPlayer: data.pricePerPlayer ?? 30,
+        status: "SCHEDULED",
+        kind: "PELADA",
+      },
+      include: includePremium,
+    });
+
+    // criador já entra
+    await prisma.matchPresence.create({ data: { matchId: match.id, userId: user.id } });
+
+    const updated = await prisma.match.findUnique({
+      where: { id: match.id },
+      include: includePremium,
+    });
+
+    return res.status(201).json(updated || match);
+  } catch (e) {
+    return res.status(400).json({ message: "Dados inválidos", error: String(e) });
+  }
+});
+
+/* ======================================================
+   GET /matches (SEGURO)
+   - admin: tudo
+   - arena_owner: matches das quadras dele
+   - owner: matches criados por ele
+   - user: só matches onde ele está presente
    ====================================================== */
 router.get("/", authRequired, async (req, res) => {
   try {
@@ -245,6 +458,8 @@ router.get("/", authRequired, async (req, res) => {
       };
     } else if (isRole(user, ["owner"])) {
       where = { organizerId: user.id };
+    } else {
+      where = { presences: { some: { userId: user.id } } };
     }
 
     const matches = await prisma.match.findMany({
@@ -259,6 +474,7 @@ router.get("/", authRequired, async (req, res) => {
         const maybe = await maybeAutoExpireMatch(m.id, {
           returnUpdatedOnly: false,
           currentMatch: m,
+          include: includePremium,
         });
         updatedMatches.push(maybe || m);
       } else {
@@ -273,15 +489,17 @@ router.get("/", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   GET /matches/:id
+   GET /matches/:id  (BLINDADO: evita pegar "peladas")
+   - como ID é CUID padrão, casa só com [a-z0-9]{20,}
    ====================================================== */
-router.get("/:id", authRequired, async (req, res) => {
+router.get("/:id([a-z0-9]{20,})", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
     const match = await maybeAutoExpireMatch(matchId, {
       returnUpdatedOnly: false,
       currentMatch: null,
+      include: includePremium,
     });
 
     if (!match) return res.status(404).json({ message: "Partida não encontrada" });
@@ -292,7 +510,7 @@ router.get("/:id", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   POST /matches (criar partida) — SEM MANUAL
+   POST /matches (criar partida) — SEM MANUAL (BOOKING)
    ====================================================== */
 router.post("/", authRequired, async (req, res) => {
   try {
@@ -332,7 +550,7 @@ router.post("/", authRequired, async (req, res) => {
       }
     }
 
-    // 1) Conflict com Reservation (não cancelada)
+    // 1) Conflict com Reservation
     const conflictReservation = await prisma.reservation.findFirst({
       where: {
         courtId: courtIdStr,
@@ -350,7 +568,7 @@ router.post("/", authRequired, async (req, res) => {
       });
     }
 
-    // 2) Conflict com outro Match (60min)
+    // 2) Conflict com outro Match
     const windowStart = addMinutes(matchStart, -180);
     const windowEnd = addMinutes(matchEnd, 180);
 
@@ -386,14 +604,13 @@ router.post("/", authRequired, async (req, res) => {
         date: matchStart,
         type: data.type,
         organizerId: user.id,
-
-        // ✅ obrigatório
         courtId: courtIdStr,
 
         maxPlayers: data.maxPlayers ?? 14,
         minPlayers: data.minPlayers ?? 0,
         pricePerPlayer: data.pricePerPlayer ?? 30,
         status: "SCHEDULED",
+        kind: data.kind || "BOOKING",
       },
       include: includePremium,
     });
@@ -408,7 +625,7 @@ router.post("/", authRequired, async (req, res) => {
    ✅ MATCH STATUS: start / finish / cancel / uncancel
    ====================================================== */
 
-router.patch("/:id/start", authRequired, async (req, res) => {
+router.patch("/:id([a-z0-9]{20,})/start", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -428,7 +645,7 @@ router.patch("/:id/start", authRequired, async (req, res) => {
   }
 });
 
-router.patch("/:id/finish", authRequired, async (req, res) => {
+router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -448,7 +665,7 @@ router.patch("/:id/finish", authRequired, async (req, res) => {
   }
 });
 
-router.patch("/:id/cancel", authRequired, async (req, res) => {
+router.patch("/:id([a-z0-9]{20,})/cancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -468,7 +685,7 @@ router.patch("/:id/cancel", authRequired, async (req, res) => {
   }
 });
 
-router.patch("/:id/uncancel", authRequired, async (req, res) => {
+router.patch("/:id([a-z0-9]{20,})/uncancel", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -489,10 +706,10 @@ router.patch("/:id/uncancel", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   ✅ STATS
+   STATS
    ====================================================== */
 
-router.get("/:id/stats", authRequired, async (req, res) => {
+router.get("/:id([a-z0-9]{20,})/stats", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
@@ -513,7 +730,7 @@ router.get("/:id/stats", authRequired, async (req, res) => {
   }
 });
 
-router.post("/:id/stats/event", authRequired, async (req, res) => {
+router.post("/:id([a-z0-9]{20,})/stats/event", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -583,10 +800,11 @@ router.post("/:id/stats/event", authRequired, async (req, res) => {
 });
 
 /* ======================================================
-   PRESENÇA (compat + oficial)
+   PRESENÇA
+   ✅ inclui trava lotação (maxPlayers)
    ====================================================== */
 
-router.post("/:id", authRequired, async (req, res) => {
+router.post("/:id([a-z0-9]{20,})", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -600,6 +818,13 @@ router.post("/:id", authRequired, async (req, res) => {
 
     if (["CANCELED", "EXPIRED", "FINISHED"].includes(match.status)) {
       return res.status(409).json({ message: `Partida ${match.status.toLowerCase()}.` });
+    }
+
+    // ✅ trava lotação
+    const maxPlayers = Number(match.maxPlayers || 0);
+    const joinedNow = match.presences?.length || 0;
+    if (maxPlayers > 0 && joinedNow >= maxPlayers) {
+      return res.status(409).json({ message: "Partida lotada." });
     }
 
     const exists = await prisma.matchPresence.findFirst({
@@ -622,7 +847,7 @@ router.post("/:id", authRequired, async (req, res) => {
   }
 });
 
-router.delete("/:id", authRequired, async (req, res) => {
+router.delete("/:id([a-z0-9]{20,})", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -643,7 +868,8 @@ router.delete("/:id", authRequired, async (req, res) => {
   }
 });
 
-router.post("/:id/join", authRequired, async (req, res) => {
+// ✅ Preferir /:id/join e DELETE /:id/join no app (mesma lógica)
+router.post("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -656,6 +882,13 @@ router.post("/:id/join", authRequired, async (req, res) => {
 
     if (["CANCELED", "EXPIRED", "FINISHED"].includes(match.status)) {
       return res.status(409).json({ message: `Partida ${match.status.toLowerCase()}.` });
+    }
+
+    // ✅ trava lotação
+    const maxPlayers = Number(match.maxPlayers || 0);
+    const joinedNow = match.presences?.length || 0;
+    if (maxPlayers > 0 && joinedNow >= maxPlayers) {
+      return res.status(409).json({ message: "Partida lotada." });
     }
 
     const exists = await prisma.matchPresence.findFirst({
@@ -678,7 +911,7 @@ router.post("/:id/join", authRequired, async (req, res) => {
   }
 });
 
-router.delete("/:id/join", authRequired, async (req, res) => {
+router.delete("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
   try {
     const user = req.user;
     const matchId = String(req.params.id || "").trim();
@@ -702,7 +935,7 @@ router.delete("/:id/join", authRequired, async (req, res) => {
 /* ======================================================
    EXPIRE MANUAL
    ====================================================== */
-router.patch("/:id/expire", authRequired, async (req, res) => {
+router.patch("/:id([a-z0-9]{20,})/expire", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
@@ -743,7 +976,7 @@ async function canAccessChat(user, matchId) {
 }
 
 // GET /matches/:id/messages
-router.get("/:id/messages", authRequired, async (req, res) => {
+router.get("/:id([a-z0-9]{20,})/messages", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
 
@@ -765,7 +998,7 @@ router.get("/:id/messages", authRequired, async (req, res) => {
 });
 
 // POST /matches/:id/messages
-router.post("/:id/messages", authRequired, async (req, res) => {
+router.post("/:id([a-z0-9]{20,})/messages", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
     const userId = req.user?.id;
@@ -793,7 +1026,7 @@ router.post("/:id/messages", authRequired, async (req, res) => {
 });
 
 // GET /matches/:id/messages/since?after=ISO
-router.get("/:id/messages/since", authRequired, async (req, res) => {
+router.get("/:id([a-z0-9]{20,})/messages/since", authRequired, async (req, res) => {
   try {
     const matchId = String(req.params.id || "").trim();
     const ok = await canAccessChat(req.user, matchId);

@@ -33,7 +33,7 @@ model User {
   name      String
   email     String   @unique
   phone     String?
-  imageUrl String? 
+  imageUrl  String?
   password  String
   role      Role     @default(user)
 
@@ -59,11 +59,11 @@ model User {
   messages MatchMessage[]
 
   reservations Reservation[]
-  
+
   stats MatchPlayerStat[]
   passwordResetTokens PasswordResetToken[]
 
-    // ✅ perfil público (social-lite)
+  // ✅ perfil público (social-lite)
   profile Profile?
 
   // ✅ pedidos de amizade (facebook)
@@ -73,10 +73,8 @@ model User {
   // ✅ amizades (par A/B)
   friendshipsA Friendship[] @relation("FriendshipsA")
   friendshipsB Friendship[] @relation("FriendshipsB")
-
-
-
 }
+
 model PasswordResetToken {
   id        String   @id @default(cuid())
   userId    String
@@ -158,12 +156,27 @@ model Court {
   @@index([arenaOwnerId])
 }
 
+enum MatchStatus {
+  SCHEDULED   // agendada
+  LIVE        // em andamento
+  FINISHED    // finalizada
+  CANCELED    // cancelada manual
+  EXPIRED     // cancelada automaticamente (não fechou / passou do horário)
+}
+
+enum MatchKind {
+  BOOKING   // reserva/agenda (privado/operacional)
+  PELADA    // partida pública (entra e participa)
+}
 
 model Match {
   id             String    @id @default(cuid())
   title          String
   date           DateTime
   type           CourtType @default(FUT7)
+
+  // ✅ NOVO: diferencia "reserva" vs "pelada"
+  kind           MatchKind @default(BOOKING)
 
   organizerId    String
   organizer      User      @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
@@ -174,9 +187,6 @@ model Match {
 
   maxPlayers     Int       @default(14)
   pricePerPlayer Int       @default(30)
-
-  // ❌ remove (ou mantém, mas NÃO usa). Recomendo remover pra não confundir:
-  // matchAddress   String?
 
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
@@ -194,8 +204,8 @@ model Match {
   @@index([date])
   @@index([organizerId])
   @@index([courtId])
+  @@index([kind])
 }
-
 
 model MatchPresence {
   id        String   @id @default(cuid())
@@ -247,8 +257,6 @@ model MatchPlayerStat {
   @@unique([matchId, userId])
   @@index([userId])
 }
-
-
 
 model PartnerArena {
   id          String   @id @default(cuid())
@@ -302,15 +310,6 @@ model Reservation {
   @@index([courtId, startAt])
   @@index([userId])
 }
-
-enum MatchStatus {
-  SCHEDULED   // agendada
-  LIVE        // em andamento
-  FINISHED    // finalizada
-  CANCELED    // cancelada manual
-  EXPIRED     // cancelada automaticamente (não fechou / passou do horário)
-}
-
 
 model Profile {
   id            String   @id @default(cuid())
@@ -376,4 +375,3 @@ model Friendship {
   @@index([userAId])
   @@index([userBId])
 }
-
