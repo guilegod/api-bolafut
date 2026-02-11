@@ -45,6 +45,10 @@ function overlap(aStart, aEnd, bStart, bEnd) {
   return as < be && bs < ae;
 }
 
+function isRole(user, roles = []) {
+  return roles.includes(user?.role);
+}
+
 /* =========================================================
    ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
    GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
@@ -82,7 +86,6 @@ router.get("/public/slots", async (req, res) => {
     const openMin = parseHM(openHM);
     const closeMinRaw = parseHM(closeHM);
 
-    // Se vier inválido, devolve vazio (não quebra)
     if (openMin == null || closeMinRaw == null) {
       return res.json({ dateLabel: date, courts: {} });
     }
@@ -99,14 +102,12 @@ router.get("/public/slots", async (req, res) => {
     const courtIds = courts.map((c) => c.id);
 
     // 1) Reservas que bloqueiam (não canceladas)
+    // ReservationStatus só tem: PENDING | CONFIRMED | CANCELED
     const reservations = await prisma.reservation.findMany({
       where: {
         courtId: { in: courtIds },
         status: { not: "CANCELED" },
-        OR: [
-          // sobrepõe o dia
-          { startAt: { lte: dayEnd }, endAt: { gte: dayStart } },
-        ],
+        OR: [{ startAt: { lte: dayEnd }, endAt: { gte: dayStart } }],
       },
       select: {
         id: true,
@@ -118,7 +119,7 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // 2) Matches tipo BOOKING que bloqueiam (se você usa isso como “reserva”)
+    // 2) Matches BOOKING que bloqueiam (se você usa como “reserva operacional”)
     const matches = await prisma.match.findMany({
       where: {
         courtId: { in: courtIds },
@@ -134,7 +135,6 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // Converte matches em blocos (1h por padrão)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
@@ -142,6 +142,7 @@ router.get("/public/slots", async (req, res) => {
     });
 
     const blocksByCourt = new Map();
+
     for (const r of reservations) {
       if (!blocksByCourt.has(r.courtId)) blocksByCourt.set(r.courtId, []);
       blocksByCourt.get(r.courtId).push({
@@ -151,6 +152,7 @@ router.get("/public/slots", async (req, res) => {
         totalPrice: r.totalPrice ?? null,
       });
     }
+
     for (const b of matchBlocks) {
       if (!blocksByCourt.has(b.courtId)) blocksByCourt.set(b.courtId, []);
       blocksByCourt.get(b.courtId).push({
@@ -161,7 +163,6 @@ router.get("/public/slots", async (req, res) => {
       });
     }
 
-    // Monta slots
     const out = {};
     for (const c of courts) {
       const blocks = blocksByCourt.get(c.id) || [];
@@ -184,22 +185,84 @@ router.get("/public/slots", async (req, res) => {
       out[c.id] = slots;
     }
 
-    return res.json({
-      dateLabel: date,
-      courts: out,
-    });
+    return res.json({ dateLabel: date, courts: out });
   } catch (e) {
     return res.status(400).json({ error: e?.message || "Erro" });
   }
 });
 
 /* =========================================================
-   🔒 AUTH (mantém como você já tinha)
+   🔒 AUTH
    ========================================================= */
 router.use(authRequired);
 
+/* =========================================================
+   ✅ DONO: listar reservas das MINHAS arenas (por data)
+   GET /reservations/mine?date=YYYY-MM-DD
+   - arena_owner vê reservas das quadras das arenas dele
+   - admin vê tudo (opcional)
+   ========================================================= */
+router.get("/mine", async (req, res) => {
+  try {
+    const schema = z.object({
+      date: z.string().refine(isValidISODate, "date deve ser YYYY-MM-DD"),
+      status: z.enum(["PENDING", "CONFIRMED", "CANCELED"]).optional(),
+    });
+
+    const { date, status } = schema.parse(req.query);
+
+    const user = req.user;
+
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ error: "Apenas arena_owner/admin" });
+    }
+
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd = new Date(`${date}T23:59:59`);
+
+    // se admin, libera tudo
+    const whereBase = {
+      OR: [{ startAt: { lte: dayEnd }, endAt: { gte: dayStart } }],
+      ...(status ? { status } : {}),
+    };
+
+    const where =
+      user.role === "admin"
+        ? whereBase
+        : {
+            ...whereBase,
+            court: {
+              arena: {
+                ownerId: user.id,
+              },
+            },
+          };
+
+    const list = await prisma.reservation.findMany({
+      where,
+      orderBy: { startAt: "asc" },
+      include: {
+        user: { select: { id: true, name: true, phone: true } },
+        court: {
+          select: {
+            id: true,
+            name: true,
+            arenaId: true,
+            arena: { select: { id: true, name: true, slug: true } },
+          },
+        },
+      },
+    });
+
+    res.json(list);
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Erro" });
+  }
+});
+
 /**
  * GET /reservations?courtId=...&date=YYYY-MM-DD
+ * (mantém, mas agora também poderia filtrar por permissões se quiser depois)
  */
 router.get("/", async (req, res) => {
   try {
@@ -234,6 +297,7 @@ router.get("/", async (req, res) => {
 /**
  * POST /reservations
  * body: { courtId, startAt, endAt, totalPrice?, notes? }
+ * - cria como PENDING e UNPAID (defaults do schema)
  */
 router.post("/", async (req, res) => {
   try {
@@ -256,14 +320,14 @@ router.post("/", async (req, res) => {
 
     const userId = req.user.id;
 
+    // conflito: qualquer coisa que não esteja CANCELED bloqueia
     const conflict = await prisma.reservation.findFirst({
       where: {
         courtId,
         status: { not: "CANCELED" },
-        OR: [
-          { startAt: { lt: end }, endAt: { gt: start } }, // overlap
-        ],
+        OR: [{ startAt: { lt: end }, endAt: { gt: start } }],
       },
+      select: { id: true, status: true },
     });
 
     if (conflict) {
@@ -278,6 +342,7 @@ router.post("/", async (req, res) => {
         endAt: end,
         totalPrice: totalPrice ?? null,
         notes: notes ?? null,
+        // status/paymentStatus ficam nos defaults do schema
       },
     });
 
@@ -287,8 +352,127 @@ router.post("/", async (req, res) => {
   }
 });
 
+/* =========================================================
+   ✅ DONO: confirmar reserva (só PENDING)
+   PATCH /reservations/:id/confirm
+   ========================================================= */
+router.patch("/:id/confirm", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = req.user;
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ error: "Apenas arena_owner/admin" });
+    }
+
+    const reservation = await prisma.reservation.findUnique({
+      where: { id },
+      include: { court: { include: { arena: true } } },
+    });
+
+    if (!reservation) return res.status(404).json({ error: "Reserva não encontrada" });
+
+    // dono só mexe nas reservas das arenas dele
+    if (user.role !== "admin" && reservation.court?.arena?.ownerId !== user.id) {
+      return res.status(403).json({ error: "Sem permissão" });
+    }
+
+    if (reservation.status !== "PENDING") {
+      return res.status(409).json({ error: "Só é possível confirmar reservas PENDING" });
+    }
+
+    const updated = await prisma.reservation.update({
+      where: { id },
+      data: { status: "CONFIRMED" },
+    });
+
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Erro" });
+  }
+});
+
+/* =========================================================
+   ✅ DONO: marcar como pago (só CONFIRMED)
+   PATCH /reservations/:id/paid
+   ========================================================= */
+router.patch("/:id/paid", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = req.user;
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ error: "Apenas arena_owner/admin" });
+    }
+
+    const reservation = await prisma.reservation.findUnique({
+      where: { id },
+      include: { court: { include: { arena: true } } },
+    });
+
+    if (!reservation) return res.status(404).json({ error: "Reserva não encontrada" });
+
+    if (user.role !== "admin" && reservation.court?.arena?.ownerId !== user.id) {
+      return res.status(403).json({ error: "Sem permissão" });
+    }
+
+    if (reservation.status !== "CONFIRMED") {
+      return res.status(409).json({ error: "Só pode marcar como pago quando estiver CONFIRMED" });
+    }
+
+    const updated = await prisma.reservation.update({
+      where: { id },
+      data: { paymentStatus: "PAID" },
+    });
+
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Erro" });
+  }
+});
+
+/* =========================================================
+   ✅ DONO: cancelar (PENDING/CONFIRMED)
+   PATCH /reservations/:id/cancel-owner
+   ========================================================= */
+router.patch("/:id/cancel-owner", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = req.user;
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ error: "Apenas arena_owner/admin" });
+    }
+
+    const reservation = await prisma.reservation.findUnique({
+      where: { id },
+      include: { court: { include: { arena: true } } },
+    });
+
+    if (!reservation) return res.status(404).json({ error: "Reserva não encontrada" });
+
+    if (user.role !== "admin" && reservation.court?.arena?.ownerId !== user.id) {
+      return res.status(403).json({ error: "Sem permissão" });
+    }
+
+    if (reservation.status === "CANCELED") {
+      return res.status(409).json({ error: "Reserva já está cancelada" });
+    }
+
+    const updated = await prisma.reservation.update({
+      where: { id },
+      data: { status: "CANCELED" },
+    });
+
+    res.json(updated);
+  } catch (e) {
+    res.status(400).json({ error: e?.message || "Erro" });
+  }
+});
+
 /**
  * PATCH /reservations/:id/cancel
+ * (usuário cancela a própria reserva)
  */
 router.patch("/:id/cancel", async (req, res) => {
   try {
