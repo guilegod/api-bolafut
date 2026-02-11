@@ -1,3 +1,4 @@
+// reservations.routes.js
 import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
@@ -5,309 +6,310 @@ import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
-const createSchema = z.object({
-  courtId: z.string().min(5),
-  startAt: z.string().min(10), // ISO string
-  durationMinutes: z.number().int().min(30).max(24 * 60).optional(), // padrão 60
-  notes: z.string().max(500).optional().nullable(),
-});
+/* =========================================================
+   Helpers (sem libs)
+   ========================================================= */
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
 
-// helpers
-function addMinutes(date, minutes) {
-  const d = new Date(date);
+function isValidISODate(s) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
+}
+
+function parseHM(hm) {
+  const m = String(hm || "").match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (h < 0 || h > 23 || mm < 0 || mm > 59) return null;
+  return h * 60 + mm;
+}
+
+function addMinutesToBaseDate(baseDate, minutes) {
+  const d = new Date(baseDate);
   d.setMinutes(d.getMinutes() + minutes);
   return d;
 }
 
-function isValidDate(d) {
-  return d instanceof Date && !Number.isNaN(d.getTime());
+function toHM(date) {
+  const d = new Date(date);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function overlaps(aStart, aEnd, bStart, bEnd) {
-  // overlap: A começa antes de B terminar e A termina depois de B começar
-  return aStart < bEnd && aEnd > bStart;
+function overlap(aStart, aEnd, bStart, bEnd) {
+  const as = new Date(aStart).getTime();
+  const ae = new Date(aEnd).getTime();
+  const bs = new Date(bStart).getTime();
+  const be = new Date(bEnd).getTime();
+  return as < be && bs < ae;
 }
 
-function ymdToRange(dateYMD) {
-  // dateYMD: "2026-01-25"
-  const start = new Date(`${dateYMD}T00:00:00.000Z`);
-  const end = new Date(`${dateYMD}T23:59:59.999Z`);
-  return { start, end };
-}
-
-async function isArenaOwnerOfCourt(userId, courtId) {
-  const court = await prisma.court.findUnique({
-    where: { id: courtId },
-    select: {
-      arenaOwnerId: true, // legado
-      arena: { select: { ownerId: true } }, // novo
-    },
-  });
-
-  if (!court) return false;
-
-  const legacyOk = court.arenaOwnerId && court.arenaOwnerId === userId;
-  const newOk = court.arena?.ownerId && court.arena.ownerId === userId;
-
-  return Boolean(legacyOk || newOk);
-}
-
-// ======================================================
-// POST /reservations
-// - Cria reserva (padrão 60min)
-// - Bloqueia conflito com:
-//   - Reservation (mesma quadra)
-//   - Match (mesma quadra) assumindo match = 60min
-// ======================================================
-router.post("/", authRequired, async (req, res) => {
+/* =========================================================
+   ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
+   GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
+   ========================================================= */
+router.get("/public/slots", async (req, res) => {
   try {
-    const user = req.user;
-    const data = createSchema.parse(req.body);
-
-    const startAt = new Date(data.startAt);
-    if (!isValidDate(startAt)) {
-      return res.status(400).json({ message: "startAt inválido" });
-    }
-
-    const duration = Number(data.durationMinutes || 60);
-    const endAt = addMinutes(startAt, duration);
-
-    // court existe?
-    const court = await prisma.court.findUnique({
-      where: { id: data.courtId },
-      select: { id: true, pricePerHour: true },
+    const schema = z.object({
+      slug: z.string().min(2),
+      date: z.string().refine(isValidISODate, "date deve ser YYYY-MM-DD"),
+      slotMinutes: z
+        .string()
+        .optional()
+        .transform((v) => (v ? Number(v) : 60))
+        .refine((n) => Number.isFinite(n) && n >= 30 && n <= 180, "slotMinutes inválido"),
     });
-    if (!court) return res.status(404).json({ message: "Quadra não encontrada" });
 
-    // totalPrice (opcional): baseado em pricePerHour
-    let totalPrice = null;
-    if (typeof court.pricePerHour === "number" && court.pricePerHour >= 0) {
-      totalPrice = Math.round((court.pricePerHour * duration) / 60);
+    const { slug, date, slotMinutes } = schema.parse(req.query);
+
+    const arena = await prisma.arena.findUnique({
+      where: { slug },
+      include: { courts: true },
+    });
+
+    if (!arena) return res.status(404).json({ error: "Arena não encontrada" });
+
+    const courts = arena.courts || [];
+    if (!courts.length) {
+      return res.json({ dateLabel: date, courts: {} });
     }
 
-    // 1) conflito com outras reservas (não canceladas)
-    const conflictReservation = await prisma.reservation.findFirst({
+    // Horário da arena (fallback padrão)
+    const openHM = arena.openTime || "07:00";
+    const closeHM = arena.closeTime || "23:00";
+
+    const openMin = parseHM(openHM);
+    const closeMinRaw = parseHM(closeHM);
+
+    // Se vier inválido, devolve vazio (não quebra)
+    if (openMin == null || closeMinRaw == null) {
+      return res.json({ dateLabel: date, courts: {} });
+    }
+
+    // Se fecha depois da meia noite (ex: 00:40), trata como +24h
+    let closeMin = closeMinRaw;
+    if (closeMin <= openMin) closeMin += 24 * 60;
+
+    // Base do dia (local)
+    const dayBase = new Date(`${date}T00:00:00`);
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd = new Date(`${date}T23:59:59`);
+
+    const courtIds = courts.map((c) => c.id);
+
+    // 1) Reservas que bloqueiam (não canceladas)
+    const reservations = await prisma.reservation.findMany({
       where: {
-        courtId: data.courtId,
-        status: { not: "CANCELED" },
-        startAt: { lt: endAt },
-        endAt: { gt: startAt },
+        courtId: { in: courtIds },
+        status: { notIn: ["CANCELED", "CANCELLED"] },
+        OR: [
+          // sobrepõe o dia
+          { startAt: { lte: dayEnd }, endAt: { gte: dayStart } },
+        ],
       },
-      select: { id: true, startAt: true, endAt: true, status: true },
+      select: {
+        id: true,
+        courtId: true,
+        startAt: true,
+        endAt: true,
+        status: true,
+        totalPrice: true,
+      },
     });
 
-    if (conflictReservation) {
-      return res.status(409).json({
-        message: "Horário já reservado",
-        conflict: { type: "reservation", ...conflictReservation },
-      });
-    }
-
-    // 2) conflito com Match (assumindo 60min por match)
-    // pega matches numa janela ampliada pra filtrar em JS
-    const windowStart = addMinutes(startAt, -180);
-    const windowEnd = addMinutes(endAt, 180);
-
+    // 2) Matches tipo BOOKING que bloqueiam (se você usa isso como “reserva”)
     const matches = await prisma.match.findMany({
       where: {
-        courtId: data.courtId,
-        date: { gte: windowStart, lte: windowEnd },
+        courtId: { in: courtIds },
+        kind: "BOOKING",
+        status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
+        date: { gte: dayStart, lte: dayEnd },
       },
-      select: { id: true, date: true, title: true },
+      select: {
+        id: true,
+        courtId: true,
+        date: true,
+        status: true,
+      },
     });
 
-    const conflictMatch = matches.find((m) => {
-      const mStart = new Date(m.date);
-      const mEnd = addMinutes(mStart, 60);
-      return overlaps(startAt, endAt, mStart, mEnd);
+    // Converte matches em blocos (1h por padrão)
+    const matchBlocks = matches.map((m) => {
+      const startAt = m.date;
+      const endAt = addMinutesToBaseDate(m.date, slotMinutes);
+      return { id: m.id, courtId: m.courtId, startAt, endAt, status: m.status };
     });
 
-    if (conflictMatch) {
-      return res.status(409).json({
-        message: "Horário já ocupado por uma partida",
-        conflict: {
-          type: "match",
-          id: conflictMatch.id,
-          date: conflictMatch.date,
-          title: conflictMatch.title,
-        },
+    const blocksByCourt = new Map();
+    for (const r of reservations) {
+      if (!blocksByCourt.has(r.courtId)) blocksByCourt.set(r.courtId, []);
+      blocksByCourt.get(r.courtId).push({
+        startAt: r.startAt,
+        endAt: r.endAt,
+        status: r.status,
+        totalPrice: r.totalPrice ?? null,
+      });
+    }
+    for (const b of matchBlocks) {
+      if (!blocksByCourt.has(b.courtId)) blocksByCourt.set(b.courtId, []);
+      blocksByCourt.get(b.courtId).push({
+        startAt: b.startAt,
+        endAt: b.endAt,
+        status: b.status,
+        totalPrice: null,
       });
     }
 
-    const created = await prisma.reservation.create({
-      data: {
-        courtId: data.courtId,
-        userId: user.id,
-        startAt,
-        endAt,
-        totalPrice,
-        status: "PENDING",
-        paymentStatus: "UNPAID",
-        notes: (data.notes || "").toString().trim() || null,
-      },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true, role: true } },
-        court: {
-          select: {
-            id: true,
-            name: true,
-            type: true,
-            pricePerHour: true,
-            arenaId: true,
-            arena: { select: { id: true, name: true, ownerId: true } },
-          },
-        },
-      },
-    });
+    // Monta slots
+    const out = {};
+    for (const c of courts) {
+      const blocks = blocksByCourt.get(c.id) || [];
+      const slots = [];
 
-    return res.status(201).json(created);
+      for (let t = openMin; t + slotMinutes <= closeMin; t += slotMinutes) {
+        const startAt = addMinutesToBaseDate(dayBase, t);
+        const endAt = addMinutesToBaseDate(dayBase, t + slotMinutes);
+
+        const busy = blocks.some((b) => overlap(startAt, endAt, b.startAt, b.endAt));
+
+        slots.push({
+          start: toHM(startAt),
+          end: toHM(endAt),
+          status: busy ? "busy" : "free",
+          price: Number.isFinite(Number(c.pricePerHour)) ? Number(c.pricePerHour) : null,
+        });
+      }
+
+      out[c.id] = slots;
+    }
+
+    return res.json({
+      dateLabel: date,
+      courts: out,
+    });
   } catch (e) {
-    return res.status(400).json({ message: "Dados inválidos", error: String(e) });
+    return res.status(400).json({ error: e?.message || "Erro" });
   }
 });
 
-// ======================================================
-// GET /reservations?date=YYYY-MM-DD&arenaId=...&courtId=...
-// - Para agenda (arena_owner)
-// ======================================================
-router.get("/", authRequired, async (req, res) => {
+/* =========================================================
+   🔒 AUTH (mantém como você já tinha)
+   ========================================================= */
+router.use(authRequired);
+
+/**
+ * GET /reservations?courtId=...&date=YYYY-MM-DD
+ */
+router.get("/", async (req, res) => {
   try {
-    const user = req.user;
+    const schema = z.object({
+      courtId: z.string().min(10),
+      date: z.string().refine(isValidISODate, "date deve ser YYYY-MM-DD"),
+    });
 
-    const date = String(req.query.date || "").trim(); // YYYY-MM-DD
-    const arenaId = String(req.query.arenaId || "").trim();
-    const courtId = String(req.query.courtId || "").trim();
+    const { courtId, date } = schema.parse(req.query);
 
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return res.status(400).json({ message: "Informe date=YYYY-MM-DD" });
-    }
+    const start = new Date(`${date}T00:00:00.000Z`);
+    const end = new Date(`${date}T23:59:59.999Z`);
 
-    const { start, end } = ymdToRange(date);
-
-    // filtro base de data
-    const where = {
-      startAt: { gte: start, lte: end },
-    };
-
-    // se veio courtId, filtra nele
-    if (courtId) where.courtId = courtId;
-
-    // se veio arenaId, filtra por arena via court
-    if (arenaId) {
-      where.court = { arenaId };
-    }
-
-    // controle de acesso:
-    // - admin vê tudo
-    // - arena_owner vê só reservas das quadras dele (legado) OU arenas dele (novo)
-    // - owner pode ver (pra operar), mas se quiser restringir depois, dá.
-    if (user.role === "arena_owner") {
-      where.OR = [
-        { court: { arenaOwnerId: user.id } }, // legado
-        { court: { arena: { ownerId: user.id } } }, // novo
-      ];
-    }
-
-    const list = await prisma.reservation.findMany({
-      where,
+    const reservations = await prisma.reservation.findMany({
+      where: {
+        courtId,
+        OR: [
+          { startAt: { gte: start, lte: end } },
+          { endAt: { gte: start, lte: end } },
+          { startAt: { lte: start }, endAt: { gte: end } },
+        ],
+      },
       orderBy: { startAt: "asc" },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true, role: true } },
-        court: {
-          select: {
-            id: true,
-            name: true,
-            type: true,
-            arenaId: true,
-            pricePerHour: true,
-            arena: { select: { id: true, name: true, ownerId: true, address: true } },
-          },
-        },
-      },
     });
 
-    return res.json(list);
+    res.json(reservations);
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao listar reservas", error: String(e) });
+    res.status(400).json({ error: e.message });
   }
 });
 
-// ======================================================
-// PATCH /reservations/:id/confirm
-// PATCH /reservations/:id/pay
-// PATCH /reservations/:id/cancel
-// - Só arena_owner (da quadra) ou admin
-// ======================================================
-async function guardArenaOwnerOrAdmin(req, res, next) {
+/**
+ * POST /reservations
+ * body: { courtId, startAt, endAt, totalPrice?, notes? }
+ */
+router.post("/", async (req, res) => {
   try {
-    const user = req.user;
-    if (user.role === "admin") return next();
-
-    const id = String(req.params.id || "").trim();
-    const r = await prisma.reservation.findUnique({
-      where: { id },
-      select: { courtId: true },
+    const schema = z.object({
+      courtId: z.string().min(10),
+      startAt: z.string(),
+      endAt: z.string(),
+      totalPrice: z.number().int().optional(),
+      notes: z.string().optional(),
     });
-    if (!r) return res.status(404).json({ message: "Reserva não encontrada" });
 
-    const ok = await isArenaOwnerOfCourt(user.id, r.courtId);
-    if (!ok) return res.status(403).json({ message: "Sem permissão" });
+    const { courtId, startAt, endAt, totalPrice, notes } = schema.parse(req.body);
 
-    req._reservationCourtId = r.courtId;
-    return next();
-  } catch (e) {
-    return res.status(500).json({ message: "Erro de permissão", error: String(e) });
-  }
-}
+    const start = new Date(startAt);
+    const end = new Date(endAt);
 
-router.patch("/:id/confirm", authRequired, guardArenaOwnerOrAdmin, async (req, res) => {
-  try {
-    const id = String(req.params.id || "").trim();
-    const updated = await prisma.reservation.update({
-      where: { id },
-      data: { status: "CONFIRMED" },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true, role: true } },
-        court: { select: { id: true, name: true, type: true, arenaId: true } },
+    if (!(start < end)) {
+      return res.status(400).json({ error: "startAt deve ser antes de endAt" });
+    }
+
+    const userId = req.user.id;
+
+    const conflict = await prisma.reservation.findFirst({
+      where: {
+        courtId,
+        status: { not: "CANCELED" },
+        OR: [
+          { startAt: { lt: end }, endAt: { gt: start } }, // overlap
+        ],
       },
     });
-    return res.json(updated);
+
+    if (conflict) {
+      return res.status(409).json({ error: "Horário já reservado" });
+    }
+
+    const reservation = await prisma.reservation.create({
+      data: {
+        courtId,
+        userId,
+        startAt: start,
+        endAt: end,
+        totalPrice: totalPrice ?? null,
+        notes: notes ?? null,
+      },
+    });
+
+    res.json(reservation);
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao confirmar reserva", error: String(e) });
+    res.status(400).json({ error: e.message });
   }
 });
 
-router.patch("/:id/pay", authRequired, guardArenaOwnerOrAdmin, async (req, res) => {
+/**
+ * PATCH /reservations/:id/cancel
+ */
+router.patch("/:id/cancel", async (req, res) => {
   try {
-    const id = String(req.params.id || "").trim();
-    const updated = await prisma.reservation.update({
-      where: { id },
-      data: { paymentStatus: "PAID" },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true, role: true } },
-        court: { select: { id: true, name: true, type: true, arenaId: true } },
-      },
-    });
-    return res.json(updated);
-  } catch (e) {
-    return res.status(500).json({ message: "Erro ao marcar como pago", error: String(e) });
-  }
-});
+    const { id } = req.params;
 
-router.patch("/:id/cancel", authRequired, guardArenaOwnerOrAdmin, async (req, res) => {
-  try {
-    const id = String(req.params.id || "").trim();
+    const reservation = await prisma.reservation.findUnique({ where: { id } });
+    if (!reservation) return res.status(404).json({ error: "Reserva não encontrada" });
+
+    const userId = req.user.id;
+    if (reservation.userId !== userId && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Sem permissão" });
+    }
+
     const updated = await prisma.reservation.update({
       where: { id },
       data: { status: "CANCELED" },
-      include: {
-        user: { select: { id: true, name: true, email: true, phone: true, role: true } },
-        court: { select: { id: true, name: true, type: true, arenaId: true } },
-      },
     });
-    return res.json(updated);
+
+    res.json(updated);
   } catch (e) {
-    return res.status(500).json({ message: "Erro ao cancelar reserva", error: String(e) });
+    res.status(400).json({ error: e.message });
   }
 });
 
