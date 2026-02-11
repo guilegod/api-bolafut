@@ -52,6 +52,9 @@ function isRole(user, roles = []) {
 /* =========================================================
    ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
    GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
+   - Bloqueia por:
+     - Reservation (status != CANCELED)
+     - Match (BOOKING e PELADA) ativos no dia
    ========================================================= */
 router.get("/public/slots", async (req, res) => {
   try {
@@ -119,11 +122,10 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // 2) Matches BOOKING que bloqueiam (se você usa como “reserva operacional”)
+    // 2) ✅ Matches que bloqueiam (BOOKING e PELADA)
     const matches = await prisma.match.findMany({
       where: {
         courtId: { in: courtIds },
-        kind: "BOOKING",
         status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
         date: { gte: dayStart, lte: dayEnd },
       },
@@ -132,13 +134,15 @@ router.get("/public/slots", async (req, res) => {
         courtId: true,
         date: true,
         status: true,
+        kind: true,
       },
     });
 
+    // Converte matches em blocos (1h por padrão = slotMinutes)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
-      return { id: m.id, courtId: m.courtId, startAt, endAt, status: m.status };
+      return { id: m.id, courtId: m.courtId, startAt, endAt, status: m.status, kind: m.kind };
     });
 
     const blocksByCourt = new Map();
@@ -150,6 +154,7 @@ router.get("/public/slots", async (req, res) => {
         endAt: r.endAt,
         status: r.status,
         totalPrice: r.totalPrice ?? null,
+        source: "reservation",
       });
     }
 
@@ -160,6 +165,8 @@ router.get("/public/slots", async (req, res) => {
         endAt: b.endAt,
         status: b.status,
         totalPrice: null,
+        source: "match",
+        kind: b.kind,
       });
     }
 
@@ -220,7 +227,6 @@ router.get("/mine", async (req, res) => {
     const dayStart = new Date(`${date}T00:00:00`);
     const dayEnd = new Date(`${date}T23:59:59`);
 
-    // se admin, libera tudo
     const whereBase = {
       OR: [{ startAt: { lte: dayEnd }, endAt: { gte: dayStart } }],
       ...(status ? { status } : {}),
@@ -262,7 +268,6 @@ router.get("/mine", async (req, res) => {
 
 /**
  * GET /reservations?courtId=...&date=YYYY-MM-DD
- * (mantém, mas agora também poderia filtrar por permissões se quiser depois)
  */
 router.get("/", async (req, res) => {
   try {
@@ -320,7 +325,6 @@ router.post("/", async (req, res) => {
 
     const userId = req.user.id;
 
-    // conflito: qualquer coisa que não esteja CANCELED bloqueia
     const conflict = await prisma.reservation.findFirst({
       where: {
         courtId,
@@ -342,7 +346,6 @@ router.post("/", async (req, res) => {
         endAt: end,
         totalPrice: totalPrice ?? null,
         notes: notes ?? null,
-        // status/paymentStatus ficam nos defaults do schema
       },
     });
 
@@ -372,7 +375,6 @@ router.patch("/:id/confirm", async (req, res) => {
 
     if (!reservation) return res.status(404).json({ error: "Reserva não encontrada" });
 
-    // dono só mexe nas reservas das arenas dele
     if (user.role !== "admin" && reservation.court?.arena?.ownerId !== user.id) {
       return res.status(403).json({ error: "Sem permissão" });
     }
