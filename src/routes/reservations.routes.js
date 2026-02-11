@@ -102,7 +102,7 @@ router.get("/public/slots", async (req, res) => {
     const reservations = await prisma.reservation.findMany({
       where: {
         courtId: { in: courtIds },
-        status: { notIn: ["CANCELED", "CANCELLED"] },
+        status: { not: "CANCELED" },
         OR: [
           // sobrepõe o dia
           { startAt: { lte: dayEnd }, endAt: { gte: dayStart } },

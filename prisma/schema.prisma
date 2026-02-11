@@ -307,9 +307,15 @@ model Reservation {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  // já tinha:
   @@index([courtId, startAt])
   @@index([userId])
+
+  // ✅ novos (recomendados)
+  @@index([courtId, endAt])
+  @@index([courtId, status])
 }
+
 
 model Profile {
   id            String   @id @default(cuid())
