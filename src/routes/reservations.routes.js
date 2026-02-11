@@ -122,23 +122,26 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // 2) ✅ Matches que bloqueiam (BOOKING e PELADA)
-    const matches = await prisma.match.findMany({
-      where: {
-        courtId: { in: courtIds },
-        status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
-        date: { gte: dayStart, lte: dayEnd },
-      },
-      select: {
-        id: true,
-        courtId: true,
-        date: true,
-        status: true,
-        kind: true,
-      },
-    });
-
-    // Converte matches em blocos (1h por padrão = slotMinutes)
+    // 2) Matches que bloqueiam (BOOKING e PELADA)
+const matches = await prisma.match.findMany({
+  where: {
+    courtId: { in: courtIds },
+    kind: { in: ["BOOKING", "PELADA"] },
+    status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
+    date: { gte: dayStart, lte: dayEnd },
+  },
+  select: {
+    id: true,
+    courtId: true,
+    date: true,
+    status: true,
+    kind: true,
+    title: true,
+    maxPlayers: true,
+    pricePerPlayer: true,
+  },
+});
+   // Converte matches em blocos (1h por padrão = slotMinutes)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
