@@ -49,12 +49,22 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
+/** pega o primeiro bloco que conflita (pra explicar "ocupado") */
+function findFirstBlock(blocks, startAt, endAt) {
+  for (const b of blocks) {
+    if (overlap(startAt, endAt, b.startAt, b.endAt)) return b;
+  }
+  return null;
+}
+
 /* =========================================================
    ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
    GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
    - Bloqueia por:
      - Reservation (status != CANCELED)
      - Match (BOOKING e PELADA) ativos no dia
+   - Retorna motivo do busy:
+     - reason: "RESERVA" | "BOOKING" | "PELADA"
    ========================================================= */
 router.get("/public/slots", async (req, res) => {
   try {
@@ -105,7 +115,6 @@ router.get("/public/slots", async (req, res) => {
     const courtIds = courts.map((c) => c.id);
 
     // 1) Reservas que bloqueiam (não canceladas)
-    // ReservationStatus só tem: PENDING | CONFIRMED | CANCELED
     const reservations = await prisma.reservation.findMany({
       where: {
         courtId: { in: courtIds },
@@ -123,29 +132,41 @@ router.get("/public/slots", async (req, res) => {
     });
 
     // 2) Matches que bloqueiam (BOOKING e PELADA)
-const matches = await prisma.match.findMany({
-  where: {
-    courtId: { in: courtIds },
-    kind: { in: ["BOOKING", "PELADA"] },
-    status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
-    date: { gte: dayStart, lte: dayEnd },
-  },
-  select: {
-    id: true,
-    courtId: true,
-    date: true,
-    status: true,
-    kind: true,
-    title: true,
-    maxPlayers: true,
-    pricePerPlayer: true,
-  },
-});
-   // Converte matches em blocos (1h por padrão = slotMinutes)
+    const matches = await prisma.match.findMany({
+      where: {
+        courtId: { in: courtIds },
+        kind: { in: ["BOOKING", "PELADA"] },
+        status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
+        date: { gte: dayStart, lte: dayEnd },
+      },
+      select: {
+        id: true,
+        courtId: true,
+        date: true,
+        status: true,
+        kind: true,
+        title: true,
+        maxPlayers: true,
+        pricePerPlayer: true,
+      },
+    });
+
+    // Converte matches em blocos (duração padrão = slotMinutes)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
-      return { id: m.id, courtId: m.courtId, startAt, endAt, status: m.status, kind: m.kind };
+      return {
+        id: m.id,
+        courtId: m.courtId,
+        startAt,
+        endAt,
+        status: m.status,
+        kind: m.kind,
+        title: m.title || null,
+        maxPlayers: m.maxPlayers ?? null,
+        pricePerPlayer: m.pricePerPlayer ?? null,
+        source: "match",
+      };
     });
 
     const blocksByCourt = new Map();
@@ -153,6 +174,7 @@ const matches = await prisma.match.findMany({
     for (const r of reservations) {
       if (!blocksByCourt.has(r.courtId)) blocksByCourt.set(r.courtId, []);
       blocksByCourt.get(r.courtId).push({
+        id: r.id,
         startAt: r.startAt,
         endAt: r.endAt,
         status: r.status,
@@ -163,14 +185,7 @@ const matches = await prisma.match.findMany({
 
     for (const b of matchBlocks) {
       if (!blocksByCourt.has(b.courtId)) blocksByCourt.set(b.courtId, []);
-      blocksByCourt.get(b.courtId).push({
-        startAt: b.startAt,
-        endAt: b.endAt,
-        status: b.status,
-        totalPrice: null,
-        source: "match",
-        kind: b.kind,
-      });
+      blocksByCourt.get(b.courtId).push(b);
     }
 
     const out = {};
@@ -182,12 +197,30 @@ const matches = await prisma.match.findMany({
         const startAt = addMinutesToBaseDate(dayBase, t);
         const endAt = addMinutesToBaseDate(dayBase, t + slotMinutes);
 
-        const busy = blocks.some((b) => overlap(startAt, endAt, b.startAt, b.endAt));
+        const block = findFirstBlock(blocks, startAt, endAt);
+        const busy = !!block;
+
+        const reason =
+          !busy
+            ? null
+            : block.source === "reservation"
+            ? "RESERVA"
+            : block.kind === "PELADA"
+            ? "PELADA"
+            : "BOOKING";
 
         slots.push({
           start: toHM(startAt),
           end: toHM(endAt),
           status: busy ? "busy" : "free",
+          reason, // ✅ RESERVA | BOOKING | PELADA | null
+          // info opcional pra UI (se quiser mostrar "Pelada Teste", etc.)
+          busyRef:
+            busy && block.source === "match"
+              ? { kind: block.kind, title: block.title, matchId: block.id }
+              : busy && block.source === "reservation"
+              ? { reservationId: block.id }
+              : null,
           price: Number.isFinite(Number(c.pricePerHour)) ? Number(c.pricePerHour) : null,
         });
       }
@@ -209,8 +242,6 @@ router.use(authRequired);
 /* =========================================================
    ✅ DONO: listar reservas das MINHAS arenas (por data)
    GET /reservations/mine?date=YYYY-MM-DD
-   - arena_owner vê reservas das quadras das arenas dele
-   - admin vê tudo (opcional)
    ========================================================= */
 router.get("/mine", async (req, res) => {
   try {
@@ -241,9 +272,7 @@ router.get("/mine", async (req, res) => {
         : {
             ...whereBase,
             court: {
-              arena: {
-                ownerId: user.id,
-              },
+              arena: { ownerId: user.id },
             },
           };
 
@@ -281,8 +310,8 @@ router.get("/", async (req, res) => {
 
     const { courtId, date } = schema.parse(req.query);
 
-    const start = new Date(`${date}T00:00:00.000Z`);
-    const end = new Date(`${date}T23:59:59.999Z`);
+    const start = new Date(`${date}T00:00:00`);
+    const end = new Date(`${date}T23:59:59`);
 
     const reservations = await prisma.reservation.findMany({
       where: {
@@ -305,7 +334,6 @@ router.get("/", async (req, res) => {
 /**
  * POST /reservations
  * body: { courtId, startAt, endAt, totalPrice?, notes? }
- * - cria como PENDING e UNPAID (defaults do schema)
  */
 router.post("/", async (req, res) => {
   try {
