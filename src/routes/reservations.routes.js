@@ -49,22 +49,14 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
-/** pega o primeiro bloco que conflita (pra explicar "ocupado") */
-function findFirstBlock(blocks, startAt, endAt) {
-  for (const b of blocks) {
-    if (overlap(startAt, endAt, b.startAt, b.endAt)) return b;
-  }
-  return null;
-}
-
 /* =========================================================
    ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
    GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
    - Bloqueia por:
      - Reservation (status != CANCELED)
      - Match (BOOKING e PELADA) ativos no dia
-   - Retorna motivo do busy:
-     - reason: "RESERVA" | "BOOKING" | "PELADA"
+   - Retorna "busyMeta" para o front conseguir exibir:
+     "Ocupado por pelada" / "Ocupado por reserva"
    ========================================================= */
 router.get("/public/slots", async (req, res) => {
   try {
@@ -151,7 +143,7 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // Converte matches em blocos (duração padrão = slotMinutes)
+    // Converte matches em blocos (duração = slotMinutes)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
@@ -162,33 +154,47 @@ router.get("/public/slots", async (req, res) => {
         endAt,
         status: m.status,
         kind: m.kind,
-        title: m.title || null,
+        title: m.title || (m.kind === "PELADA" ? "Pelada" : "Reserva"),
         maxPlayers: m.maxPlayers ?? null,
         pricePerPlayer: m.pricePerPlayer ?? null,
-        source: "match",
       };
     });
 
+    // blocksByCourt: courtId -> [blocks]
     const blocksByCourt = new Map();
 
     for (const r of reservations) {
       if (!blocksByCourt.has(r.courtId)) blocksByCourt.set(r.courtId, []);
       blocksByCourt.get(r.courtId).push({
-        id: r.id,
         startAt: r.startAt,
         endAt: r.endAt,
         status: r.status,
         totalPrice: r.totalPrice ?? null,
         source: "reservation",
+        reservationId: r.id,
+        kind: null,
+        title: "Reserva",
       });
     }
 
     for (const b of matchBlocks) {
       if (!blocksByCourt.has(b.courtId)) blocksByCourt.set(b.courtId, []);
-      blocksByCourt.get(b.courtId).push(b);
+      blocksByCourt.get(b.courtId).push({
+        startAt: b.startAt,
+        endAt: b.endAt,
+        status: b.status,
+        totalPrice: null,
+        source: "match",
+        matchId: b.id,
+        kind: b.kind, // PELADA | BOOKING
+        title: b.title,
+        maxPlayers: b.maxPlayers,
+        pricePerPlayer: b.pricePerPlayer,
+      });
     }
 
     const out = {};
+
     for (const c of courts) {
       const blocks = blocksByCourt.get(c.id) || [];
       const slots = [];
@@ -197,31 +203,28 @@ router.get("/public/slots", async (req, res) => {
         const startAt = addMinutesToBaseDate(dayBase, t);
         const endAt = addMinutesToBaseDate(dayBase, t + slotMinutes);
 
-        const block = findFirstBlock(blocks, startAt, endAt);
-        const busy = !!block;
-
-        const reason =
-          !busy
-            ? null
-            : block.source === "reservation"
-            ? "RESERVA"
-            : block.kind === "PELADA"
-            ? "PELADA"
-            : "BOOKING";
+        const busyBlock = blocks.find((b) => overlap(startAt, endAt, b.startAt, b.endAt));
+        const busy = !!busyBlock;
 
         slots.push({
           start: toHM(startAt),
           end: toHM(endAt),
           status: busy ? "busy" : "free",
-          reason, // ✅ RESERVA | BOOKING | PELADA | null
-          // info opcional pra UI (se quiser mostrar "Pelada Teste", etc.)
-          busyRef:
-            busy && block.source === "match"
-              ? { kind: block.kind, title: block.title, matchId: block.id }
-              : busy && block.source === "reservation"
-              ? { reservationId: block.id }
-              : null,
           price: Number.isFinite(Number(c.pricePerHour)) ? Number(c.pricePerHour) : null,
+
+          // ✅ meta do bloqueio pro front mostrar "Pelada reservada"
+          busyMeta: busy
+            ? {
+                source: busyBlock.source, // "reservation" | "match"
+                kind: busyBlock.kind || null, // "PELADA" | "BOOKING" | null
+                title: busyBlock.title || null,
+                matchId: busyBlock.matchId || null,
+                reservationId: busyBlock.reservationId || null,
+                status: busyBlock.status || null,
+                maxPlayers: busyBlock.maxPlayers ?? null,
+                pricePerPlayer: busyBlock.pricePerPlayer ?? null,
+              }
+            : null,
         });
       }
 
@@ -272,7 +275,9 @@ router.get("/mine", async (req, res) => {
         : {
             ...whereBase,
             court: {
-              arena: { ownerId: user.id },
+              arena: {
+                ownerId: user.id,
+              },
             },
           };
 
@@ -310,8 +315,8 @@ router.get("/", async (req, res) => {
 
     const { courtId, date } = schema.parse(req.query);
 
-    const start = new Date(`${date}T00:00:00`);
-    const end = new Date(`${date}T23:59:59`);
+    const start = new Date(`${date}T00:00:00.000Z`);
+    const end = new Date(`${date}T23:59:59.999Z`);
 
     const reservations = await prisma.reservation.findMany({
       where: {
