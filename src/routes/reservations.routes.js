@@ -49,14 +49,18 @@ function isRole(user, roles = []) {
   return roles.includes(user?.role);
 }
 
+function slotPriceFromHour(pricePerHour, slotMinutes) {
+  const p = Number(pricePerHour);
+  const s = Number(slotMinutes || 60);
+  if (!Number.isFinite(p) || p <= 0) return null;
+  if (!Number.isFinite(s) || s <= 0) return null;
+  // preço do slot (ex: 30min => metade do preço/hora)
+  return Math.round((p * s) / 60);
+}
+
 /* =========================================================
    ✅ PUBLIC: slots de agenda por arena/slug (sem auth)
    GET /reservations/public/slots?slug=...&date=YYYY-MM-DD
-   - Bloqueia por:
-     - Reservation (status != CANCELED)
-     - Match (BOOKING e PELADA) ativos no dia
-   - Retorna "busyMeta" para o front conseguir exibir:
-     "Ocupado por pelada" / "Ocupado por reserva"
    ========================================================= */
 router.get("/public/slots", async (req, res) => {
   try {
@@ -84,7 +88,6 @@ router.get("/public/slots", async (req, res) => {
       return res.json({ dateLabel: date, courts: {} });
     }
 
-    // Horário da arena (fallback padrão)
     const openHM = arena.openTime || "07:00";
     const closeHM = arena.closeTime || "23:00";
 
@@ -95,18 +98,15 @@ router.get("/public/slots", async (req, res) => {
       return res.json({ dateLabel: date, courts: {} });
     }
 
-    // Se fecha depois da meia noite (ex: 00:40), trata como +24h
     let closeMin = closeMinRaw;
     if (closeMin <= openMin) closeMin += 24 * 60;
 
-    // Base do dia (local)
     const dayBase = new Date(`${date}T00:00:00`);
     const dayStart = new Date(`${date}T00:00:00`);
     const dayEnd = new Date(`${date}T23:59:59`);
 
     const courtIds = courts.map((c) => c.id);
 
-    // 1) Reservas que bloqueiam (não canceladas)
     const reservations = await prisma.reservation.findMany({
       where: {
         courtId: { in: courtIds },
@@ -123,7 +123,6 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // 2) Matches que bloqueiam (BOOKING e PELADA)
     const matches = await prisma.match.findMany({
       where: {
         courtId: { in: courtIds },
@@ -143,7 +142,6 @@ router.get("/public/slots", async (req, res) => {
       },
     });
 
-    // Converte matches em blocos (duração = slotMinutes)
     const matchBlocks = matches.map((m) => {
       const startAt = m.date;
       const endAt = addMinutesToBaseDate(m.date, slotMinutes);
@@ -160,7 +158,6 @@ router.get("/public/slots", async (req, res) => {
       };
     });
 
-    // blocksByCourt: courtId -> [blocks]
     const blocksByCourt = new Map();
 
     for (const r of reservations) {
@@ -186,7 +183,7 @@ router.get("/public/slots", async (req, res) => {
         totalPrice: null,
         source: "match",
         matchId: b.id,
-        kind: b.kind, // PELADA | BOOKING
+        kind: b.kind,
         title: b.title,
         maxPlayers: b.maxPlayers,
         pricePerPlayer: b.pricePerPlayer,
@@ -210,13 +207,14 @@ router.get("/public/slots", async (req, res) => {
           start: toHM(startAt),
           end: toHM(endAt),
           status: busy ? "busy" : "free",
-          price: Number.isFinite(Number(c.pricePerHour)) ? Number(c.pricePerHour) : null,
 
-          // ✅ meta do bloqueio pro front mostrar "Pelada reservada"
+          // ✅ FIX: preço do SLOT (não do "por hora")
+          price: slotPriceFromHour(c.pricePerHour, slotMinutes),
+
           busyMeta: busy
             ? {
-                source: busyBlock.source, // "reservation" | "match"
-                kind: busyBlock.kind || null, // "PELADA" | "BOOKING" | null
+                source: busyBlock.source,
+                kind: busyBlock.kind || null,
                 title: busyBlock.title || null,
                 matchId: busyBlock.matchId || null,
                 reservationId: busyBlock.reservationId || null,
@@ -241,6 +239,196 @@ router.get("/public/slots", async (req, res) => {
    🔒 AUTH
    ========================================================= */
 router.use(authRequired);
+
+/* =========================================================
+   ✅ DONO: slots da MINHA arena (mesmo formato do público)
+   GET /reservations/owner/slots?arenaId=...&date=YYYY-MM-DD&slotMinutes=60
+   - Retorna { dateLabel, courts: { [courtId]: slots[] } }
+   - Slots incluem busyMeta (reservation ou match)
+   ========================================================= */
+router.get("/owner/slots", async (req, res) => {
+  try {
+    const schema = z.object({
+      arenaId: z.string().min(10),
+      date: z.string().refine(isValidISODate, "date deve ser YYYY-MM-DD"),
+      slotMinutes: z
+        .string()
+        .optional()
+        .transform((v) => (v ? Number(v) : 60))
+        .refine((n) => Number.isFinite(n) && n >= 30 && n <= 180, "slotMinutes inválido"),
+    });
+
+    const { arenaId, date, slotMinutes } = schema.parse(req.query);
+
+    const user = req.user;
+    if (!isRole(user, ["arena_owner", "admin"])) {
+      return res.status(403).json({ error: "Apenas arena_owner/admin" });
+    }
+
+    // ✅ arena do dono (ou admin vê qualquer uma)
+    const arena = await prisma.arena.findFirst({
+      where:
+        user.role === "admin"
+          ? { id: arenaId }
+          : { id: arenaId, ownerId: user.id },
+      include: { courts: true },
+    });
+
+    if (!arena) return res.status(404).json({ error: "Arena não encontrada (ou sem permissão)" });
+
+    const courts = arena.courts || [];
+    if (!courts.length) return res.json({ dateLabel: date, courts: {} });
+
+    const openHM = arena.openTime || "07:00";
+    const closeHM = arena.closeTime || "23:00";
+
+    const openMin = parseHM(openHM);
+    const closeMinRaw = parseHM(closeHM);
+
+    if (openMin == null || closeMinRaw == null) {
+      return res.json({ dateLabel: date, courts: {} });
+    }
+
+    let closeMin = closeMinRaw;
+    if (closeMin <= openMin) closeMin += 24 * 60;
+
+    const dayBase = new Date(`${date}T00:00:00`);
+    const dayStart = new Date(`${date}T00:00:00`);
+    const dayEnd = new Date(`${date}T23:59:59`);
+
+    const courtIds = courts.map((c) => c.id);
+
+    const reservations = await prisma.reservation.findMany({
+      where: {
+        courtId: { in: courtIds },
+        status: { not: "CANCELED" },
+        OR: [{ startAt: { lte: dayEnd }, endAt: { gte: dayStart } }],
+      },
+      select: {
+        id: true,
+        courtId: true,
+        startAt: true,
+        endAt: true,
+        status: true,
+        totalPrice: true,
+      },
+    });
+
+    const matches = await prisma.match.findMany({
+      where: {
+        courtId: { in: courtIds },
+        kind: { in: ["BOOKING", "PELADA"] },
+        status: { notIn: ["CANCELED", "EXPIRED", "FINISHED"] },
+        date: { gte: dayStart, lte: dayEnd },
+      },
+      select: {
+        id: true,
+        courtId: true,
+        date: true,
+        status: true,
+        kind: true,
+        title: true,
+        maxPlayers: true,
+        pricePerPlayer: true,
+      },
+    });
+
+    const matchBlocks = matches.map((m) => {
+      const startAt = m.date;
+      const endAt = addMinutesToBaseDate(m.date, slotMinutes);
+      return {
+        id: m.id,
+        courtId: m.courtId,
+        startAt,
+        endAt,
+        status: m.status,
+        kind: m.kind,
+        title: m.title || (m.kind === "PELADA" ? "Pelada" : "Reserva"),
+        maxPlayers: m.maxPlayers ?? null,
+        pricePerPlayer: m.pricePerPlayer ?? null,
+      };
+    });
+
+    const blocksByCourt = new Map();
+
+    for (const r of reservations) {
+      if (!blocksByCourt.has(r.courtId)) blocksByCourt.set(r.courtId, []);
+      blocksByCourt.get(r.courtId).push({
+        startAt: r.startAt,
+        endAt: r.endAt,
+        status: r.status,
+        totalPrice: r.totalPrice ?? null,
+        source: "reservation",
+        reservationId: r.id,
+        kind: null,
+        title: "Reserva",
+      });
+    }
+
+    for (const b of matchBlocks) {
+      if (!blocksByCourt.has(b.courtId)) blocksByCourt.set(b.courtId, []);
+      blocksByCourt.get(b.courtId).push({
+        startAt: b.startAt,
+        endAt: b.endAt,
+        status: b.status,
+        totalPrice: null,
+        source: "match",
+        matchId: b.id,
+        kind: b.kind,
+        title: b.title,
+        maxPlayers: b.maxPlayers,
+        pricePerPlayer: b.pricePerPlayer,
+      });
+    }
+
+    const out = {};
+
+    for (const c of courts) {
+      const blocks = blocksByCourt.get(c.id) || [];
+      const slots = [];
+
+      for (let t = openMin; t + slotMinutes <= closeMin; t += slotMinutes) {
+        const startAt = addMinutesToBaseDate(dayBase, t);
+        const endAt = addMinutesToBaseDate(dayBase, t + slotMinutes);
+
+        const busyBlock = blocks.find((b) => overlap(startAt, endAt, b.startAt, b.endAt));
+        const busy = !!busyBlock;
+
+        slots.push({
+          start: toHM(startAt),
+          end: toHM(endAt),
+          status: busy ? "busy" : "free",
+
+          // ✅ FIX: preço do SLOT
+          price: slotPriceFromHour(c.pricePerHour, slotMinutes),
+
+          busyMeta: busy
+            ? {
+                source: busyBlock.source,
+                kind: busyBlock.kind || null,
+                title: busyBlock.title || null,
+                matchId: busyBlock.matchId || null,
+                reservationId: busyBlock.reservationId || null,
+                status: busyBlock.status || null,
+                maxPlayers: busyBlock.maxPlayers ?? null,
+                pricePerPlayer: busyBlock.pricePerPlayer ?? null,
+              }
+            : null,
+        });
+      }
+
+      out[c.id] = slots;
+    }
+
+    return res.json({
+      dateLabel: date,
+      arena: { id: arena.id, name: arena.name, slug: arena.slug },
+      courts: out,
+    });
+  } catch (e) {
+    return res.status(400).json({ error: e?.message || "Erro" });
+  }
+});
 
 /* =========================================================
    ✅ DONO: listar reservas das MINHAS arenas (por data)
