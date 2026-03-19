@@ -9,8 +9,8 @@ datasource db {
 
 enum Role {
   user
-  owner        // organizador
-  arena_owner  // dono de arena/estabelecimento
+  owner
+  arena_owner
   admin
 }
 
@@ -28,250 +28,35 @@ enum CourtType {
   OUTRO
 }
 
-model User {
-  id        String   @id @default(cuid())
-  name      String
-  email     String   @unique
-  phone     String?
-  imageUrl  String?
-  password  String
-  role      Role     @default(user)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  // (LEGADO) ainda funciona: quadras ligadas direto no arena_owner
-  courts Court[] @relation("ArenaOwnerCourts")
-
-  // ✅ arenas do arena_owner
-  arenas Arena[] @relation("ArenaOwnerArenas")
-
-  // partidas criadas por organizador
-  matches Match[] @relation("OrganizerMatches")
-
-  // parcerias do organizador com arenas
-  partnerships PartnerArena[] @relation("OrganizerPartnerships")
-
-  // presenças do usuário nas partidas
-  presences MatchPresence[]
-
-  // chat da partida
-  messages MatchMessage[]
-
-  reservations Reservation[]
-
-  stats MatchPlayerStat[]
-  passwordResetTokens PasswordResetToken[]
-
-  // ✅ perfil público (social-lite)
-  profile Profile?
-
-  // ✅ pedidos de amizade (facebook)
-  friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
-  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
-
-  // ✅ amizades (par A/B)
-  friendshipsA Friendship[] @relation("FriendshipsA")
-  friendshipsB Friendship[] @relation("FriendshipsB")
+enum TeamSide {
+  A
+  B
 }
 
-model PasswordResetToken {
-  id        String   @id @default(cuid())
-  userId    String
-  tokenHash String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-  @@index([expiresAt])
+enum MatchEventType {
+  GOAL
+  MVP
+  START
+  END
 }
 
-model Arena {
-  id        String   @id @default(cuid())
-  name      String
-  slug      String   @unique   // 👈 NOVO
-  city      String?
-  district  String?
-  address   String?
-  imageUrl  String?
-
-  openTime  String?  // "09:00"
-  closeTime String?  // "23:00"
-
-  // ✅ extras “SaaS”
-  pixKey        String?
-  hasParking    Boolean @default(false)
-  hasLockerRoom Boolean @default(false)
-  hasLighting   Boolean @default(false)
-
-  ratingAvg     Float   @default(0)
-  ratingCount   Int     @default(0)
-
-  // opcional (se quiser guardar comodidades livres)
-  amenities     Json?
-
-  ownerId   String
-  owner     User     @relation("ArenaOwnerArenas", fields: [ownerId], references: [id], onDelete: Cascade)
-
-  courts    Court[]
-  partnerships PartnerArena[]
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([ownerId])
-}
-
-model Court {
-  id        String    @id @default(cuid())
-  name      String
-  type      CourtType @default(FUTSAL)
-
-  city      String?
-  address   String?
-
-  // ✅ pertence a uma Arena (OBRIGATÓRIO)
-  arenaId   String
-  arena     Arena     @relation(fields: [arenaId], references: [id], onDelete: Cascade)
-
-  // (LEGADO) pode ficar por enquanto, mas NÃO USA mais no app novo
-  arenaOwnerId String?
-  arenaOwner   User?   @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
-
-  capacity     Int      @default(14)
-  pricePerHour Int?
-  covered      Boolean  @default(false)
-  surface      String?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  matches   Match[]
-  reservations Reservation[]
-
-  @@index([arenaId])
-  @@index([arenaOwnerId])
+enum MatchEventStatus {
+  CONFIRMED
+  REMOVED
+  CONTESTED
 }
 
 enum MatchStatus {
-  SCHEDULED   // agendada
-  LIVE        // em andamento
-  FINISHED    // finalizada
-  CANCELED    // cancelada manual
-  EXPIRED     // cancelada automaticamente (não fechou / passou do horário)
+  SCHEDULED
+  LIVE
+  FINISHED
+  CANCELED
+  EXPIRED
 }
 
 enum MatchKind {
-  BOOKING   // reserva/agenda (privado/operacional)
-  PELADA    // partida pública (entra e participa)
-}
-
-model Match {
-  id             String    @id @default(cuid())
-  title          String
-  date           DateTime
-  type           CourtType @default(FUT7)
-
-  // ✅ NOVO: diferencia "reserva" vs "pelada"
-  kind           MatchKind @default(BOOKING)
-
-  organizerId    String
-  organizer      User      @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
-
-  // ✅ OBRIGATÓRIO
-  courtId        String
-  court          Court     @relation(fields: [courtId], references: [id], onDelete: Cascade)
-
-  maxPlayers     Int       @default(14)
-  pricePerPlayer Int       @default(30)
-
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-
-  presences      MatchPresence[]
-  messages       MatchMessage[]
-  stats          MatchPlayerStat[]
-
-  status     MatchStatus @default(SCHEDULED)
-  minPlayers Int @default(0)
-  startedAt  DateTime?
-  finishedAt DateTime?
-  canceledAt DateTime?
-
-  @@index([date])
-  @@index([organizerId])
-  @@index([courtId])
-  @@index([kind])
-}
-
-model MatchPresence {
-  id        String   @id @default(cuid())
-  matchId   String
-  userId    String
-
-  status    String   @default("confirmed") // confirmed / waitlist / left
-
-  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@unique([matchId, userId])
-  @@index([userId])
-}
-
-model MatchMessage {
-  id        String   @id @default(cuid())
-  matchId   String
-  userId    String
-  text      String
-
-  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@index([matchId])
-}
-
-model MatchPlayerStat {
-  id        String   @id @default(cuid())
-  matchId   String
-  userId    String
-
-  goalsOfficial     Int @default(0)
-  assistsOfficial   Int @default(0)
-
-  goalsUnofficial   Int @default(0)
-  assistsUnofficial Int @default(0)
-
-  match     Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@unique([matchId, userId])
-  @@index([userId])
-}
-
-model PartnerArena {
-  id          String   @id @default(cuid())
-  organizerId String
-  arenaId     String
-  status      String   @default("active")
-
-  organizer   User     @relation("OrganizerPartnerships", fields: [organizerId], references: [id], onDelete: Cascade)
-  arena       Arena    @relation(fields: [arenaId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-
-  @@unique([organizerId, arenaId])
-  @@index([organizerId])
-  @@index([arenaId])
+  BOOKING
+  PELADA
 }
 
 enum ReservationStatus {
@@ -286,78 +71,374 @@ enum PaymentStatus {
   REFUNDED
 }
 
+enum PixProvider {
+  OPENPIX
+}
+
+enum PixPaymentStatus {
+  CREATED
+  PENDING
+  PAID
+  EXPIRED
+  CANCELED
+  ERROR
+}
+
+model User {
+  id       String  @id @default(cuid())
+  name     String
+  email    String  @unique
+  phone    String?
+  imageUrl String?
+  password String
+  role     Role    @default(user)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // legado
+  courts Court[] @relation("ArenaOwnerCourts")
+
+  // arenas do arena_owner
+  arenas Arena[] @relation("ArenaOwnerArenas")
+
+  // partidas criadas
+  matches Match[] @relation("OrganizerMatches")
+
+  // partidas controladas
+  controlledMatches Match[] @relation("MatchController")
+
+  // presenças em partidas
+  presences MatchPresence[]
+
+  // chat das partidas
+  messages MatchMessage[]
+
+  // reservas
+  reservations Reservation[]
+
+  // stats por partida
+  stats MatchPlayerStat[]
+
+  // eventos de partida
+  eventGoals         MatchEvent[] @relation("EventPlayer")
+  eventAssists       MatchEvent[] @relation("EventAssist")
+  createdMatchEvents MatchEvent[] @relation("EventCreatedBy")
+
+  // parceria com arenas
+  partnerships PartnerArena[] @relation("OrganizerPartnerships")
+
+  passwordResetTokens PasswordResetToken[]
+
+  // perfil público
+  profile Profile?
+
+  // amizade
+  friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
+  friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
+  friendshipsA           Friendship[]    @relation("FriendshipsA")
+  friendshipsB           Friendship[]    @relation("FriendshipsB")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Arena {
+  id       String  @id @default(cuid())
+  name     String
+  slug     String  @unique
+  city     String?
+  district String?
+  address  String?
+  imageUrl String?
+
+  openTime  String?
+  closeTime String?
+
+  pixKey        String?
+  hasParking    Boolean @default(false)
+  hasLockerRoom Boolean @default(false)
+  hasLighting   Boolean @default(false)
+
+  ratingAvg   Float @default(0)
+  ratingCount Int   @default(0)
+
+  amenities Json?
+
+  ownerId String
+  owner   User   @relation("ArenaOwnerArenas", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  courts       Court[]
+  partnerships PartnerArena[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model Court {
+  id   String    @id @default(cuid())
+  name String
+  type CourtType @default(FUTSAL)
+
+  city    String?
+  address String?
+
+  // arena principal
+  arenaId String
+  arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  // legado
+  arenaOwnerId String?
+  arenaOwner   User?   @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
+
+  capacity     Int     @default(14)
+  pricePerHour Int?
+  covered      Boolean @default(false)
+  surface      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  matches      Match[]
+  reservations Reservation[]
+
+  @@index([arenaId])
+  @@index([arenaOwnerId])
+}
+
+model Match {
+  id    String    @id @default(cuid())
+  title String
+  date  DateTime
+  type  CourtType @default(FUT7)
+  kind  MatchKind @default(BOOKING)
+
+  organizerId String
+  organizer   User   @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
+
+  courtId String
+  court   Court  @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  maxPlayers     Int @default(14)
+  pricePerPlayer Int @default(30)
+
+  controllerId String?
+  controller   User?   @relation("MatchController", fields: [controllerId], references: [id], onDelete: SetNull)
+
+  teamAName String?
+  teamBName String?
+
+  teamAScore Int @default(0)
+  teamBScore Int @default(0)
+
+  winnerSide TeamSide?
+
+  status     MatchStatus @default(SCHEDULED)
+  minPlayers Int         @default(0)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  canceledAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  presences MatchPresence[]
+  messages  MatchMessage[]
+  stats     MatchPlayerStat[]
+  events    MatchEvent[]
+
+  @@index([date])
+  @@index([organizerId])
+  @@index([courtId])
+  @@index([kind])
+  @@index([controllerId])
+  @@index([status])
+}
+
+model MatchPresence {
+  id      String @id @default(cuid())
+  matchId String
+  userId  String
+
+  status    String    @default("confirmed")
+  teamSide  TeamSide?
+  isCaptain Boolean   @default(false)
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([matchId, userId])
+  @@index([userId])
+  @@index([matchId])
+  @@index([teamSide])
+}
+
+model MatchMessage {
+  id      String @id @default(cuid())
+  matchId String
+  userId  String
+  text    String
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([matchId])
+  @@index([userId])
+}
+
+model MatchPlayerStat {
+  id      String @id @default(cuid())
+  matchId String
+  userId  String
+
+  goalsOfficial     Int @default(0)
+  assistsOfficial   Int @default(0)
+  goalsUnofficial   Int @default(0)
+  assistsUnofficial Int @default(0)
+  wins              Int @default(0)
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([matchId, userId])
+  @@index([userId])
+  @@index([matchId])
+}
+
+model MatchEvent {
+  id String @id @default(cuid())
+
+  matchId String
+  match   Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  type   MatchEventType
+  status MatchEventStatus @default(CONFIRMED)
+
+  teamSide TeamSide?
+
+  playerId String?
+  player   User?   @relation("EventPlayer", fields: [playerId], references: [id], onDelete: SetNull)
+
+  assistPlayerId String?
+  assistPlayer   User?   @relation("EventAssist", fields: [assistPlayerId], references: [id], onDelete: SetNull)
+
+  minute Int?
+  notes  String?
+
+  createdById String
+  createdBy   User   @relation("EventCreatedBy", fields: [createdById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([matchId])
+  @@index([playerId])
+  @@index([assistPlayerId])
+  @@index([type])
+  @@index([status])
+  @@index([teamSide])
+}
+
+model PartnerArena {
+  id          String @id @default(cuid())
+  organizerId String
+  arenaId     String
+  status      String @default("active")
+
+  organizer User  @relation("OrganizerPartnerships", fields: [organizerId], references: [id], onDelete: Cascade)
+  arena     Arena @relation(fields: [arenaId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([organizerId, arenaId])
+  @@index([organizerId])
+  @@index([arenaId])
+}
+
 model Reservation {
-  id            String @id @default(cuid())
+  id String @id @default(cuid())
 
-  courtId        String
-  court          Court @relation(fields: [courtId], references: [id], onDelete: Cascade)
+  courtId String
+  court   Court  @relation(fields: [courtId], references: [id], onDelete: Cascade)
 
-  userId         String
-  user           User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  startAt        DateTime
-  endAt          DateTime
+  startAt DateTime
+  endAt   DateTime
 
-  totalPrice     Int?
-  status         ReservationStatus @default(PENDING)
-  paymentStatus  PaymentStatus @default(UNPAID)
+  totalPrice    Int?
+  status        ReservationStatus @default(PENDING)
+  paymentStatus PaymentStatus     @default(UNPAID)
 
-  notes          String?
+  notes String?
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // já tinha:
+  pixPayment PixPayment?
+
   @@index([courtId, startAt])
   @@index([userId])
-
-  // ✅ novos (recomendados)
   @@index([courtId, endAt])
   @@index([courtId, status])
 }
 
-
 model Profile {
-  id            String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  userId        String   @unique
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // identidade pública
-  username      String?  @unique
+  username      String? @unique
   bio           String?
   city          String?
   bairro        String?
   coverImageUrl String?
 
-  // futebol (ou esportes) — MVP
-  position      String?  // "Meia", "Zagueiro", etc
-  level         String?  // "Iniciante", "Médio", "Avançado"
-  foot          String?  // "Destro", "Canhoto", "Ambidestro"
+  position String?
+  level    String?
+  foot     String?
 
-  // tags (ex: ["Futsal", "Resenha", "FUT7"])
-  tags          Json?
+  tags Json?
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model FriendRequest {
-  id        String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  fromId    String
-  toId      String
+  fromId String
+  toId   String
 
-  // pending/accepted/declined/canceled (você decide na API)
-  status    String   @default("pending")
+  status String @default("pending")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  from      User     @relation("FriendRequestsSent", fields: [fromId], references: [id], onDelete: Cascade)
-  to        User     @relation("FriendRequestsReceived", fields: [toId], references: [id], onDelete: Cascade)
+  from User @relation("FriendRequestsSent", fields: [fromId], references: [id], onDelete: Cascade)
+  to   User @relation("FriendRequestsReceived", fields: [toId], references: [id], onDelete: Cascade)
 
-  // evita spam duplicado
   @@unique([fromId, toId])
   @@index([toId])
   @@index([fromId])
@@ -365,19 +446,45 @@ model FriendRequest {
 }
 
 model Friendship {
-  id        String   @id @default(cuid())
+  id String @id @default(cuid())
 
-  // guardamos sempre ordenado na aplicação (A < B)
-  userAId   String
-  userBId   String
+  userAId String
+  userBId String
 
   createdAt DateTime @default(now())
 
-  userA     User     @relation("FriendshipsA", fields: [userAId], references: [id], onDelete: Cascade)
-  userB     User     @relation("FriendshipsB", fields: [userBId], references: [id], onDelete: Cascade)
+  userA User @relation("FriendshipsA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB User @relation("FriendshipsB", fields: [userBId], references: [id], onDelete: Cascade)
 
-  // garante que não existe amizade duplicada
   @@unique([userAId, userBId])
   @@index([userAId])
   @@index([userBId])
+}
+
+model PixPayment {
+  id String @id @default(cuid())
+
+  provider PixProvider      @default(OPENPIX)
+  status   PixPaymentStatus @default(CREATED)
+
+  reservationId String      @unique
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  correlationId String  @unique
+  chargeId      String?
+  txid          String?
+
+  value       Int
+  brCode      String?
+  qrCodeImage String?
+  expiresAt   DateTime?
+
+  paidAt DateTime?
+  raw    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([chargeId])
+  @@index([txid])
 }
