@@ -556,6 +556,13 @@ router.get("/peladas", async (req, res) => {
 router.post("/peladas", authRequired, async (req, res) => {
   try {
     const user = req.user;
+
+    if (!isRole(user, ["admin", "owner", "arena_owner"])) {
+      return res.status(403).json({
+        message: "Sem permissão para criar peladas",
+      });
+    }
+
     const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
 
     const courtIdStr = String(data.courtId || "").trim();
@@ -578,6 +585,17 @@ router.post("/peladas", authRequired, async (req, res) => {
       return res
         .status(400)
         .json({ message: "Dados inválidos", error: "courtId não existe." });
+    }
+
+    if (isRole(user, ["arena_owner"])) {
+      const legacyOk = court.arenaOwnerId === user.id;
+      const newOk = court.arena?.ownerId === user.id;
+
+      if (!legacyOk && !newOk) {
+        return res.status(403).json({
+          message: "Você só pode criar peladas nas suas próprias quadras",
+        });
+      }
     }
 
     const conflictReservation = await prisma.reservation.findFirst({
