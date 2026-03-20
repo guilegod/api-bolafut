@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { authRequired } from "../middleware/auth.js";
+import { createFeedPost } from "../services/profile/feedService.js";
 
 const router = Router();
 
@@ -9,7 +10,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v10_controller_locked_events",
+    version: "matches_routes_v11_profile_feed_integrated",
   });
 });
 
@@ -264,6 +265,18 @@ async function getControllerLockedMatch(matchId) {
       controllerId: true,
       teamAScore: true,
       teamBScore: true,
+      teamAName: true,
+      teamBName: true,
+      title: true,
+      court: {
+        select: {
+          arena: {
+            select: {
+              name: true,
+            },
+          },
+        },
+      },
       presences: {
         select: {
           userId: true,
@@ -947,8 +960,21 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       where: { id: matchId },
       select: {
         id: true,
+        title: true,
+        teamAName: true,
+        teamBName: true,
         teamAScore: true,
         teamBScore: true,
+        winnerSide: true,
+        court: {
+          select: {
+            arena: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        },
         presences: {
           select: { userId: true, teamSide: true },
         },
@@ -998,6 +1024,25 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       },
       include: includePremium,
     });
+
+    for (const participant of participants) {
+      const didWin = winnerSide && participant?.teamSide === winnerSide;
+
+      await createFeedPost({
+        userId: participant.userId,
+        matchId,
+        type: didWin ? "WIN" : "LOSS",
+        text: didWin
+          ? "Saiu com a vitória e somou mais uma grande atuação."
+          : "Partida encerrada. Hora de voltar mais forte na próxima.",
+        meta: {
+          score: `${match.teamAScore} x ${match.teamBScore}`,
+          arena: match?.court?.arena?.name || "",
+          matchTitle: match?.title || "",
+          winnerSide,
+        },
+      });
+    }
 
     return res.json(match);
   } catch (e) {
@@ -1267,6 +1312,38 @@ router.post("/:id([a-z0-9]{20,})/events/goal", authRequired, async (req, res) =>
       where: { id: matchId },
       include: includePremium,
     });
+
+    await createFeedPost({
+      userId: data.playerId,
+      matchId,
+      type: "GOAL",
+      text: "Marcou e deixou sua marca na partida.",
+      meta: {
+        score,
+        arena: updatedMatch?.court?.arena?.name || "",
+        matchTitle: updatedMatch?.title || "",
+        minute: data.minute ?? null,
+        opponent:
+          data.teamSide === "A"
+            ? updatedMatch?.teamBName || "Adversário"
+            : updatedMatch?.teamAName || "Adversário",
+      },
+    });
+
+    if (data.assistPlayerId) {
+      await createFeedPost({
+        userId: data.assistPlayerId,
+        matchId,
+        type: "ASSIST",
+        text: "Distribuiu uma assistência decisiva.",
+        meta: {
+          score,
+          arena: updatedMatch?.court?.arena?.name || "",
+          matchTitle: updatedMatch?.title || "",
+          minute: data.minute ?? null,
+        },
+      });
+    }
 
     return res.json({
       event,
@@ -1570,7 +1647,10 @@ router.post("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
       select: { id: true },
     });
 
+    let createdPresence = false;
+
     if (!exists) {
+      createdPresence = true;
       await prisma.matchPresence.create({
         data: { matchId, userId: user.id },
       });
@@ -1580,6 +1660,20 @@ router.post("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
       where: { id: matchId },
       include: includePremium,
     });
+
+    if (createdPresence) {
+      await createFeedPost({
+        userId: user.id,
+        matchId,
+        type: "CHECKIN",
+        text: "Confirmou presença e já está pronto para jogar.",
+        meta: {
+          arena: updated?.court?.arena?.name || "",
+          matchTitle: updated?.title || "",
+          date: updated?.date || null,
+        },
+      });
+    }
 
     return res.json(updated);
   } catch (e) {

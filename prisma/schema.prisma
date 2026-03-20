@@ -84,6 +84,16 @@ enum PixPaymentStatus {
   ERROR
 }
 
+enum FeedPostType {
+  POST
+  GOAL
+  ASSIST
+  WIN
+  LOSS
+  CHECKIN
+  MVP
+}
+
 model User {
   id       String  @id @default(cuid())
   name     String
@@ -124,6 +134,9 @@ model User {
   eventGoals         MatchEvent[] @relation("EventPlayer")
   eventAssists       MatchEvent[] @relation("EventAssist")
   createdMatchEvents MatchEvent[] @relation("EventCreatedBy")
+
+  // feed do jogador
+  feedPosts FeedPost[]
 
   // parceria com arenas
   partnerships PartnerArena[] @relation("OrganizerPartnerships")
@@ -259,6 +272,7 @@ model Match {
   messages  MatchMessage[]
   stats     MatchPlayerStat[]
   events    MatchEvent[]
+  feedPosts FeedPost[]
 
   @@index([date])
   @@index([organizerId])
@@ -356,6 +370,26 @@ model MatchEvent {
   @@index([type])
   @@index([status])
   @@index([teamSide])
+}
+
+model FeedPost {
+  id       String       @id @default(cuid())
+  userId   String
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  matchId  String?
+  match    Match?       @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  type     FeedPostType @default(POST)
+  text     String
+  imageUrl String?
+  meta     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([matchId])
 }
 
 model PartnerArena {
