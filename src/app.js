@@ -12,6 +12,7 @@ import partnerArenasRoutes from "./routes/partnerArenas.js";
 import arenasRoutes from "./routes/arenas.routes.js";
 import reservationsRoutes from "./routes/reservations.routes.js";
 import friendsRoutes from "./routes/friends.routes.js";
+import rankRoutes from "./routes/rank.routes.js";
 
 // ✅ NOVO
 import usersRoutes from "./routes/users.routes.js";
@@ -49,6 +50,7 @@ app.use("/matches", matchesRoutes);
 app.use("/partner-arenas", partnerArenasRoutes);
 app.use("/reservations", reservationsRoutes);
 app.use("/friends", friendsRoutes);
+app.use("/rank", rankRoutes);
 
 // ✅ 404 sempre por último
 app.use((req, res) => {

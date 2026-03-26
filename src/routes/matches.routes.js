@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { authRequired } from "../middleware/auth.js";
 import { createFeedPost } from "../services/profile/feedService.js";
+import { processMatchRank } from "../services/rankService.js";
 
 const router = Router();
 
@@ -10,7 +11,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v11_profile_feed_integrated",
+    version: "matches_routes_v12_profile_feed_rank_integrated",
   });
 });
 
@@ -132,6 +133,7 @@ const matchCreateSchema = z.object({
 const statEventSchema = z.object({
   userId: z.string().min(5),
   type: z.enum(["goal", "assist"]),
+
   mode: z.enum(["official", "unofficial"]),
   delta: z.number().int().min(-1).max(1),
 });
@@ -1024,6 +1026,12 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       },
       include: includePremium,
     });
+
+    try {
+      await processMatchRank(matchId);
+    } catch (rankError) {
+      console.error("Erro ao processar rank:", rankError);
+    }
 
     for (const participant of participants) {
       const didWin = winnerSide && participant?.teamSide === winnerSide;

@@ -151,6 +151,42 @@ model User {
   friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
   friendshipsA           Friendship[]    @relation("FriendshipsA")
   friendshipsB           Friendship[]    @relation("FriendshipsB")
+
+  // ranking
+  rank PlayerRank?
+}
+
+model PlayerRank {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+
+  rating         Int      @default(1000)
+  wins           Int      @default(0)
+  losses         Int      @default(0)
+  draws          Int      @default(0)
+  matches        Int      @default(0)
+
+  goals          Int      @default(0)
+  assists        Int      @default(0)
+  mvpCount       Int      @default(0)
+
+  winStreak      Int      @default(0)
+  bestWinStreak  Int      @default(0)
+
+  tier           String   @default("Bronze")
+  progress       Int      @default(0)
+  rankPosition   Int      @default(0)
+
+  season         String   @default("global")
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([rating])
+  @@index([tier])
+  @@index([season, rating])
 }
 
 model PasswordResetToken {
@@ -259,11 +295,12 @@ model Match {
 
   winnerSide TeamSide?
 
-  status     MatchStatus @default(SCHEDULED)
-  minPlayers Int         @default(0)
-  startedAt  DateTime?
-  finishedAt DateTime?
-  canceledAt DateTime?
+  status        MatchStatus @default(SCHEDULED)
+  minPlayers    Int         @default(0)
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  canceledAt    DateTime?
+  rankProcessed Boolean     @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -280,6 +317,7 @@ model Match {
   @@index([kind])
   @@index([controllerId])
   @@index([status])
+  @@index([rankProcessed])
 }
 
 model MatchPresence {
