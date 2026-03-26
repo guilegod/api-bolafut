@@ -1027,11 +1027,15 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       include: includePremium,
     });
 
-    try {
-      await processMatchRank(matchId);
-    } catch (rankError) {
-      console.error("Erro ao processar rank:", rankError);
-    }
+        try {
+        await processMatchRank(matchId);
+      } catch (rankError) {
+        console.error("Erro ao processar rank:", rankError);
+        return res.status(500).json({
+          message: "Partida finalizada, mas o rank falhou.",
+          error: String(rankError),
+        });
+      }
 
     for (const participant of participants) {
       const didWin = winnerSide && participant?.teamSide === winnerSide;
