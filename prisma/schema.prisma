@@ -278,8 +278,14 @@ model Match {
   organizerId String
   organizer   User   @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
 
-  courtId String
-  court   Court  @relation(fields: [courtId], references: [id], onDelete: Cascade)
+  // agora opcional para aceitar pelada manual
+  courtId String?
+  court   Court?  @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  // dados manuais do local
+  manualArenaName String?
+  manualAddress   String?
+  isManualLocation Boolean @default(false)
 
   maxPlayers     Int @default(14)
   pricePerPlayer Int @default(30)
@@ -318,6 +324,7 @@ model Match {
   @@index([controllerId])
   @@index([status])
   @@index([rankProcessed])
+  @@index([isManualLocation])
 }
 
 model MatchPresence {

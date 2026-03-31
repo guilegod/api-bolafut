@@ -11,7 +11,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v12_profile_feed_rank_integrated",
+    version: "matches_routes_v13_manual_peladas_enabled",
   });
 });
 
@@ -118,7 +118,11 @@ const matchCreateSchema = z.object({
     ])
     .default("FUT7"),
 
-  courtId: z.string().min(3),
+  courtId: z.string().min(3).optional().nullable(),
+  manualArenaName: z.string().min(2).max(120).optional().nullable(),
+  manualAddress: z.string().min(2).max(180).optional().nullable(),
+  isManualLocation: z.coerce.boolean().optional(),
+
   kind: z.enum(["BOOKING", "PELADA"]).optional(),
 
   maxPlayers: z.coerce.number().int().min(2).max(40).optional(),
@@ -168,6 +172,10 @@ function addMinutes(date, minutes) {
 
 function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart < bEnd && aEnd > bStart;
+}
+
+function getArenaLabel(match) {
+  return match?.court?.arena?.name || match?.manualArenaName || "";
 }
 
 async function canEditOfficialStats(user, matchId) {
@@ -270,6 +278,9 @@ async function getControllerLockedMatch(matchId) {
       teamAName: true,
       teamBName: true,
       title: true,
+      manualArenaName: true,
+      manualAddress: true,
+      isManualLocation: true,
       court: {
         select: {
           arena: {
@@ -580,8 +591,6 @@ router.post("/peladas", authRequired, async (req, res) => {
 
     const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
 
-    const courtIdStr = String(data.courtId || "").trim();
-
     const matchStart = new Date(data.date);
     if (Number.isNaN(matchStart.getTime())) {
       return res
@@ -590,6 +599,62 @@ router.post("/peladas", authRequired, async (req, res) => {
     }
 
     const matchEnd = addMinutes(matchStart, 60);
+
+    const courtIdStr = String(data.courtId || "").trim();
+    const manualArenaName = String(data.manualArenaName || "").trim();
+    const manualAddress = String(data.manualAddress || "").trim();
+
+    const isManualLocation = !courtIdStr;
+
+    if (isManualLocation) {
+      if (!manualArenaName || !manualAddress) {
+        return res.status(400).json({
+          message: "Dados inválidos",
+          error:
+            "Para pelada manual, informe manualArenaName e manualAddress.",
+        });
+      }
+
+      const match = await prisma.match.create({
+        data: {
+          title: data.title,
+          date: matchStart,
+          type: data.type,
+          organizerId: user.id,
+          controllerId: data.controllerId || user.id,
+          courtId: null,
+          manualArenaName,
+          manualAddress,
+          isManualLocation: true,
+          teamAName: data.teamAName || "Time A",
+          teamBName: data.teamBName || "Time B",
+          teamAScore: 0,
+          teamBScore: 0,
+          maxPlayers: data.maxPlayers ?? 14,
+          minPlayers: data.minPlayers ?? 0,
+          pricePerPlayer: data.pricePerPlayer ?? 30,
+          status: "SCHEDULED",
+          kind: "PELADA",
+        },
+        include: includePremium,
+      });
+
+      await prisma.matchPresence.create({
+        data: {
+          matchId: match.id,
+          userId: user.id,
+          teamSide: "A",
+          isCaptain: true,
+        },
+      });
+
+      const updated = await prisma.match.findUnique({
+        where: { id: match.id },
+        include: includePremium,
+      });
+
+      return res.status(201).json(updated || match);
+    }
 
     const court = await prisma.court.findUnique({
       where: { id: courtIdStr },
@@ -673,6 +738,9 @@ router.post("/peladas", authRequired, async (req, res) => {
         organizerId: user.id,
         controllerId: data.controllerId || user.id,
         courtId: courtIdStr,
+        manualArenaName: null,
+        manualAddress: null,
+        isManualLocation: false,
         teamAName: data.teamAName || "Time A",
         teamBName: data.teamBName || "Time B",
         teamAScore: 0,
@@ -891,6 +959,9 @@ router.post("/", authRequired, async (req, res) => {
         organizerId: user.id,
         controllerId: data.controllerId || user.id,
         courtId: courtIdStr,
+        manualArenaName: null,
+        manualAddress: null,
+        isManualLocation: false,
         teamAName: data.teamAName || "Time A",
         teamBName: data.teamBName || "Time B",
         teamAScore: 0,
@@ -963,6 +1034,9 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       select: {
         id: true,
         title: true,
+        manualArenaName: true,
+        manualAddress: true,
+        isManualLocation: true,
         teamAName: true,
         teamBName: true,
         teamAScore: true,
@@ -1027,15 +1101,15 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       include: includePremium,
     });
 
-        try {
-        await processMatchRank(matchId);
-      } catch (rankError) {
-        console.error("Erro ao processar rank:", rankError);
-        return res.status(500).json({
-          message: "Partida finalizada, mas o rank falhou.",
-          error: String(rankError),
-        });
-      }
+    try {
+      await processMatchRank(matchId);
+    } catch (rankError) {
+      console.error("Erro ao processar rank:", rankError);
+      return res.status(500).json({
+        message: "Partida finalizada, mas o rank falhou.",
+        error: String(rankError),
+      });
+    }
 
     for (const participant of participants) {
       const didWin = winnerSide && participant?.teamSide === winnerSide;
@@ -1049,7 +1123,7 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
           : "Partida encerrada. Hora de voltar mais forte na próxima.",
         meta: {
           score: `${match.teamAScore} x ${match.teamBScore}`,
-          arena: match?.court?.arena?.name || "",
+          arena: getArenaLabel(match),
           matchTitle: match?.title || "",
           winnerSide,
         },
@@ -1332,7 +1406,7 @@ router.post("/:id([a-z0-9]{20,})/events/goal", authRequired, async (req, res) =>
       text: "Marcou e deixou sua marca na partida.",
       meta: {
         score,
-        arena: updatedMatch?.court?.arena?.name || "",
+        arena: getArenaLabel(updatedMatch),
         matchTitle: updatedMatch?.title || "",
         minute: data.minute ?? null,
         opponent:
@@ -1350,7 +1424,7 @@ router.post("/:id([a-z0-9]{20,})/events/goal", authRequired, async (req, res) =>
         text: "Distribuiu uma assistência decisiva.",
         meta: {
           score,
-          arena: updatedMatch?.court?.arena?.name || "",
+          arena: getArenaLabel(updatedMatch),
           matchTitle: updatedMatch?.title || "",
           minute: data.minute ?? null,
         },
@@ -1680,7 +1754,7 @@ router.post("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
         type: "CHECKIN",
         text: "Confirmou presença e já está pronto para jogar.",
         meta: {
-          arena: updated?.court?.arena?.name || "",
+          arena: getArenaLabel(updated),
           matchTitle: updated?.title || "",
           date: updated?.date || null,
         },
