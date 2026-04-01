@@ -1,9 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
+import timezone from "dayjs/plugin/timezone.js";
 import { prisma } from "../lib/prisma.js";
 import { authRequired } from "../middleware/auth.js";
 import { createFeedPost } from "../services/profile/feedService.js";
 import { processMatchRank } from "../services/rankService.js";
+
+dayjs.extend(utc);
+dayjs.extend(timezone);
 
 const router = Router();
 
@@ -11,7 +17,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v14_manual_peladas_local_datetime_fix",
+    version: "matches_routes_v15_brazil_timezone_fix",
   });
 });
 
@@ -137,7 +143,6 @@ const matchCreateSchema = z.object({
 const statEventSchema = z.object({
   userId: z.string().min(5),
   type: z.enum(["goal", "assist"]),
-
   mode: z.enum(["official", "unofficial"]),
   delta: z.number().int().min(-1).max(1),
 });
@@ -179,13 +184,16 @@ function getArenaLabel(match) {
 }
 
 /**
- * Faz parse de datas "sem timezone" como horário local.
- * Exemplos:
- * - 2026-03-31T20:00
- * - 2026-03-31 20:00:00
- * - ISO com timezone continua funcionando
+ * Converte data/hora enviada pelo front como horário de São Paulo
+ * e salva corretamente em UTC no banco.
+ *
+ * Exemplos aceitos:
+ * - 2026-04-01T20:00
+ * - 2026-04-01 20:00:00
+ * - 2026-04-01T20:00:00
+ * - ISO já com timezone
  */
-function parseLocalDateTime(value) {
+function parseBrazilDateTimeToUTC(value) {
   if (!value) return null;
 
   if (value instanceof Date) {
@@ -199,32 +207,32 @@ function parseLocalDateTime(value) {
     raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw);
 
   if (hasTimezone) {
-    const d = new Date(raw);
-    return Number.isNaN(d.getTime()) ? null : d;
+    const parsed = dayjs(raw);
+    return parsed.isValid() ? parsed.toDate() : null;
   }
 
   const normalized = raw.replace(" ", "T");
-  const match = normalized.match(
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
-  );
+  const parsed = dayjs.tz(normalized, "America/Sao_Paulo");
 
-  if (!match) {
-    const fallback = new Date(raw);
-    return Number.isNaN(fallback.getTime()) ? null : fallback;
-  }
+  if (!parsed.isValid()) return null;
 
-  const [, y, m, d, hh, mm, ss = "00"] = match;
+  return parsed.utc().toDate();
+}
 
-  const localDate = new Date(
-    Number(y),
-    Number(m) - 1,
-    Number(d),
-    Number(hh),
-    Number(mm),
-    Number(ss)
-  );
+/**
+ * Para filtros públicos por dia.
+ * Interpreta a data como São Paulo e monta início/fim do dia corretamente.
+ */
+function parseBrazilDate(value) {
+  if (!value) return null;
 
-  return Number.isNaN(localDate.getTime()) ? null : localDate;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const parsed = dayjs.tz(raw, "America/Sao_Paulo");
+  if (!parsed.isValid()) return null;
+
+  return parsed;
 }
 
 async function canEditOfficialStats(user, matchId) {
@@ -304,15 +312,6 @@ async function isUserInMatch(userId, matchId) {
     select: { id: true },
   });
   return Boolean(presence);
-}
-
-async function getMatchWithPresence(matchId) {
-  return prisma.match.findUnique({
-    where: { id: matchId },
-    include: {
-      presences: true,
-    },
-  });
 }
 
 async function getControllerLockedMatch(matchId) {
@@ -432,6 +431,7 @@ async function maybeAutoExpireMatch(matchId, opts = {}) {
 
   const now = new Date();
   const deadline = addMinutes(new Date(base.date), 30);
+
   if (now <= deadline) {
     if (returnUpdatedOnly) return null;
     return currentMatch
@@ -565,18 +565,21 @@ router.get("/peladas", async (req, res) => {
     let from = null;
     let to = null;
 
-    if (fromStr) from = parseLocalDateTime(fromStr);
-    if (toStr) to = parseLocalDateTime(toStr);
+    if (fromStr) {
+      const parsedFrom = parseBrazilDate(fromStr);
+      from = parsedFrom ? parsedFrom.startOf("day").utc().toDate() : null;
+    }
+
+    if (toStr) {
+      const parsedTo = parseBrazilDate(toStr);
+      to = parsedTo ? parsedTo.endOf("day").utc().toDate() : null;
+    }
 
     if (!from && !to && dateStr) {
-      const d = parseLocalDateTime(dateStr);
-      if (d && !Number.isNaN(d.getTime())) {
-        const start = new Date(d);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(d);
-        end.setHours(23, 59, 59, 999);
-        from = start;
-        to = end;
+      const parsedDate = parseBrazilDate(dateStr);
+      if (parsedDate) {
+        from = parsedDate.startOf("day").utc().toDate();
+        to = parsedDate.endOf("day").utc().toDate();
       }
     }
 
@@ -640,7 +643,7 @@ router.post("/peladas", authRequired, async (req, res) => {
 
     const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
 
-    const matchStart = parseLocalDateTime(data.date);
+    const matchStart = parseBrazilDateTimeToUTC(data.date);
     if (!matchStart || Number.isNaN(matchStart.getTime())) {
       return res
         .status(400)
@@ -918,7 +921,7 @@ router.post("/", authRequired, async (req, res) => {
     const data = matchCreateSchema.parse(req.body);
     const courtIdStr = String(data.courtId || "").trim();
 
-    const matchStart = parseLocalDateTime(data.date);
+    const matchStart = parseBrazilDateTimeToUTC(data.date);
     if (!matchStart || Number.isNaN(matchStart.getTime())) {
       return res
         .status(400)
@@ -1552,7 +1555,7 @@ router.post("/:id([a-z0-9]{20,})/events/undo-last", authRequired, async (req, re
 });
 
 /* ======================================================
-   STATS (LEGADO + Fallback)
+   STATS
    ====================================================== */
 
 router.get("/:id([a-z0-9]{20,})/stats", authRequired, async (req, res) => {
