@@ -11,7 +11,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v13_manual_peladas_enabled",
+    version: "matches_routes_v14_manual_peladas_local_datetime_fix",
   });
 });
 
@@ -176,6 +176,55 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
 
 function getArenaLabel(match) {
   return match?.court?.arena?.name || match?.manualArenaName || "";
+}
+
+/**
+ * Faz parse de datas "sem timezone" como horário local.
+ * Exemplos:
+ * - 2026-03-31T20:00
+ * - 2026-03-31 20:00:00
+ * - ISO com timezone continua funcionando
+ */
+function parseLocalDateTime(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const hasTimezone =
+    raw.endsWith("Z") || /[+-]\d{2}:\d{2}$/.test(raw);
+
+  if (hasTimezone) {
+    const d = new Date(raw);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  const normalized = raw.replace(" ", "T");
+  const match = normalized.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
+  );
+
+  if (!match) {
+    const fallback = new Date(raw);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+
+  const [, y, m, d, hh, mm, ss = "00"] = match;
+
+  const localDate = new Date(
+    Number(y),
+    Number(m) - 1,
+    Number(d),
+    Number(hh),
+    Number(mm),
+    Number(ss)
+  );
+
+  return Number.isNaN(localDate.getTime()) ? null : localDate;
 }
 
 async function canEditOfficialStats(user, matchId) {
@@ -516,12 +565,12 @@ router.get("/peladas", async (req, res) => {
     let from = null;
     let to = null;
 
-    if (fromStr) from = new Date(fromStr);
-    if (toStr) to = new Date(toStr);
+    if (fromStr) from = parseLocalDateTime(fromStr);
+    if (toStr) to = parseLocalDateTime(toStr);
 
     if (!from && !to && dateStr) {
-      const d = new Date(dateStr);
-      if (!Number.isNaN(d.getTime())) {
+      const d = parseLocalDateTime(dateStr);
+      if (d && !Number.isNaN(d.getTime())) {
         const start = new Date(d);
         start.setHours(0, 0, 0, 0);
         const end = new Date(d);
@@ -591,8 +640,8 @@ router.post("/peladas", authRequired, async (req, res) => {
 
     const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
 
-    const matchStart = new Date(data.date);
-    if (Number.isNaN(matchStart.getTime())) {
+    const matchStart = parseLocalDateTime(data.date);
+    if (!matchStart || Number.isNaN(matchStart.getTime())) {
       return res
         .status(400)
         .json({ message: "Dados inválidos", error: "date inválido." });
@@ -869,8 +918,8 @@ router.post("/", authRequired, async (req, res) => {
     const data = matchCreateSchema.parse(req.body);
     const courtIdStr = String(data.courtId || "").trim();
 
-    const matchStart = new Date(data.date);
-    if (Number.isNaN(matchStart.getTime())) {
+    const matchStart = parseLocalDateTime(data.date);
+    if (!matchStart || Number.isNaN(matchStart.getTime())) {
       return res
         .status(400)
         .json({ message: "Dados inválidos", error: "date inválido." });
