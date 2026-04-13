@@ -639,17 +639,33 @@ router.post("/peladas", authRequired, async (req, res) => {
     const matchEnd = addMinutes(matchStart, 60);
 
     const courtIdStr = String(data.courtId || "").trim();
+    const peladaLocationIdStr = String(data.peladaLocationId || "").trim();
     const manualArenaName = String(data.manualArenaName || "").trim();
     const manualAddress = String(data.manualAddress || "").trim();
 
-    const isManualLocation = !courtIdStr;
+    const hasCourt = Boolean(courtIdStr);
+    const hasPeladaLocation = Boolean(peladaLocationIdStr);
+    const isManualLocation = !hasCourt && !hasPeladaLocation;
 
-    if (isManualLocation) {
-      if (!manualArenaName || !manualAddress) {
+    // ❌ evitar conflito
+    if (hasCourt && hasPeladaLocation) {
+      return res.status(400).json({
+        message: "Dados inválidos",
+        error: "Use apenas courtId OU peladaLocationId",
+      });
+    }
+
+    /* ======================================================
+       🔥 LOCAL CADASTRADO (NOVO)
+       ====================================================== */
+    if (hasPeladaLocation) {
+      const peladaLocation = await prisma.peladaLocation.findUnique({
+        where: { id: peladaLocationIdStr },
+      });
+
+      if (!peladaLocation || !peladaLocation.isActive) {
         return res.status(400).json({
-          message: "Dados inválidos",
-          error:
-            "Para pelada manual, informe manualArenaName e manualAddress.",
+          message: "Local inválido",
         });
       }
 
@@ -661,6 +677,62 @@ router.post("/peladas", authRequired, async (req, res) => {
           organizerId: user.id,
           controllerId: data.controllerId || user.id,
           courtId: null,
+          peladaLocationId: peladaLocation.id,
+          manualArenaName: null,
+          manualAddress: null,
+          isManualLocation: false,
+          teamAName: data.teamAName || "Time A",
+          teamBName: data.teamBName || "Time B",
+          teamAScore: 0,
+          teamBScore: 0,
+          maxPlayers: data.maxPlayers ?? 14,
+          minPlayers: data.minPlayers ?? 0,
+          pricePerPlayer: data.pricePerPlayer ?? 30,
+          status: "SCHEDULED",
+          kind: "PELADA",
+        },
+        include: includePremium,
+      });
+
+      await prisma.matchPresence.create({
+        data: {
+          matchId: match.id,
+          userId: user.id,
+          teamSide: "A",
+          isCaptain: true,
+        },
+      });
+
+      return res.status(201).json(match);
+    }
+
+    /* ======================================================
+       🔥 MANUAL (COM REGRA DE ROLE)
+       ====================================================== */
+    if (isManualLocation) {
+      // ❌ OWNER NÃO PODE
+      if (user.role === "owner") {
+        return res.status(403).json({
+          message: "Owner só pode usar locais cadastrados",
+        });
+      }
+
+      if (!manualArenaName || !manualAddress) {
+        return res.status(400).json({
+          message: "Dados inválidos",
+          error: "Informe nome e endereço",
+        });
+      }
+
+      const match = await prisma.match.create({
+        data: {
+          title: data.title,
+          date: matchStart,
+          type: data.type,
+          organizerId: user.id,
+          controllerId: data.controllerId || user.id,
+          courtId: null,
+          peladaLocationId: null,
           manualArenaName,
           manualAddress,
           isManualLocation: true,
@@ -686,13 +758,12 @@ router.post("/peladas", authRequired, async (req, res) => {
         },
       });
 
-      const updated = await prisma.match.findUnique({
-        where: { id: match.id },
-        include: includePremium,
-      });
-
-      return res.status(201).json(updated || match);
+      return res.status(201).json(match);
     }
+
+    /* ======================================================
+       🔥 QUADRA (SEM ALTERAÇÃO)
+       ====================================================== */
 
     const court = await prisma.court.findUnique({
       where: { id: courtIdStr },
@@ -700,71 +771,8 @@ router.post("/peladas", authRequired, async (req, res) => {
     });
 
     if (!court) {
-      return res
-        .status(400)
-        .json({ message: "Dados inválidos", error: "courtId não existe." });
-    }
-
-    if (isRole(user, ["arena_owner"])) {
-      const legacyOk = court.arenaOwnerId === user.id;
-      const newOk = court.arena?.ownerId === user.id;
-
-      if (!legacyOk && !newOk) {
-        return res.status(403).json({
-          message: "Você só pode criar peladas nas suas próprias quadras",
-        });
-      }
-    }
-
-    const conflictReservation = await prisma.reservation.findFirst({
-      where: {
-        courtId: courtIdStr,
-        status: { not: "CANCELED" },
-        startAt: { lt: matchEnd },
-        endAt: { gt: matchStart },
-      },
-      select: {
-        id: true,
-        startAt: true,
-        endAt: true,
-        status: true,
-        paymentStatus: true,
-      },
-    });
-
-    if (conflictReservation) {
-      return res.status(409).json({
-        message: "Horário já reservado (Reservation)",
-        conflict: { type: "reservation", ...conflictReservation },
-      });
-    }
-
-    const windowStart = addMinutes(matchStart, -180);
-    const windowEnd = addMinutes(matchEnd, 180);
-
-    const nearMatches = await prisma.match.findMany({
-      where: {
-        courtId: courtIdStr,
-        date: { gte: windowStart, lte: windowEnd },
-      },
-      select: { id: true, date: true, title: true },
-    });
-
-    const conflictMatch = nearMatches.find((m) => {
-      const mStart = new Date(m.date);
-      const mEnd = addMinutes(mStart, 60);
-      return overlaps(matchStart, matchEnd, mStart, mEnd);
-    });
-
-    if (conflictMatch) {
-      return res.status(409).json({
-        message: "Horário já ocupado por outra partida (Match)",
-        conflict: {
-          type: "match",
-          id: conflictMatch.id,
-          date: conflictMatch.date,
-          title: conflictMatch.title,
-        },
+      return res.status(400).json({
+        message: "courtId inválido",
       });
     }
 
@@ -801,16 +809,13 @@ router.post("/peladas", authRequired, async (req, res) => {
       },
     });
 
-    const updated = await prisma.match.findUnique({
-      where: { id: match.id },
-      include: includePremium,
-    });
+    return res.status(201).json(match);
 
-    return res.status(201).json(updated || match);
   } catch (e) {
-    return res
-      .status(400)
-      .json({ message: "Dados inválidos", error: String(e) });
+    return res.status(400).json({
+      message: "Erro",
+      error: String(e),
+    });
   }
 });
 

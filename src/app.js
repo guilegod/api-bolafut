@@ -13,6 +13,7 @@ import arenasRoutes from "./routes/arenas.routes.js";
 import reservationsRoutes from "./routes/reservations.routes.js";
 import friendsRoutes from "./routes/friends.routes.js";
 import rankRoutes from "./routes/rank.routes.js";
+import peladaLocationRoutes from "./routes/peladaLocation.routes.js";
 
 // ✅ NOVO
 import usersRoutes from "./routes/users.routes.js";
@@ -51,6 +52,7 @@ app.use("/partner-arenas", partnerArenasRoutes);
 app.use("/reservations", reservationsRoutes);
 app.use("/friends", friendsRoutes);
 app.use("/rank", rankRoutes);
+app.use("/pelada-locations", peladaLocationRoutes);
 
 // ✅ 404 sempre por último
 app.use((req, res) => {
