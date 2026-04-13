@@ -50,17 +50,27 @@ export function getTierProgress(rating = 1000, tier = "Bronze") {
   return Math.round(((rating - min) / (max - min)) * 100);
 }
 
+function normalizeMatchResult(result) {
+  const value = String(result || "").trim().toUpperCase();
+  if (value === "WIN" || value === "LOSS" || value === "DRAW") {
+    return value;
+  }
+  return "LOSS";
+}
+
 function calcRatingDelta({
   result = "LOSS",
   goals = 0,
   assists = 0,
   isMvp = false,
 }) {
+  const safeResult = normalizeMatchResult(result);
+
   let delta = 0;
 
-  if (result === "WIN") {
+  if (safeResult === "WIN") {
     delta += 25;
-  } else if (result === "DRAW") {
+  } else if (safeResult === "DRAW") {
     delta += 5;
   } else {
     delta -= 15;
@@ -121,9 +131,7 @@ export async function updatePlayerRankAfterMatch({
     throw new Error("userId é obrigatório em updatePlayerRankAfterMatch.");
   }
 
-  const safeResult = ["WIN", "LOSS", "DRAW"].includes(result)
-    ? result
-    : "LOSS";
+  const safeResult = normalizeMatchResult(result);
 
   const current = await ensurePlayerRank(userId);
 
@@ -142,7 +150,8 @@ export async function updatePlayerRankAfterMatch({
   const newWins = Number(current.wins || 0) + (safeResult === "WIN" ? 1 : 0);
   const newLosses =
     Number(current.losses || 0) + (safeResult === "LOSS" ? 1 : 0);
-  const newDraws = Number(current.draws || 0) + (safeResult === "DRAW" ? 1 : 0);
+  const newDraws =
+    Number(current.draws || 0) + (safeResult === "DRAW" ? 1 : 0);
 
   const newWinStreak =
     safeResult === "WIN" ? Number(current.winStreak || 0) + 1 : 0;
@@ -214,6 +223,8 @@ export function buildRankSummary(rank) {
     goals: Number(rank?.goals || 0),
     assists: Number(rank?.assists || 0),
     mvpCount: Number(rank?.mvpCount || 0),
+    winStreak: Number(rank?.winStreak || 0),
+    bestWinStreak: Number(rank?.bestWinStreak || 0),
     winRate:
       Number(rank?.matches || 0) > 0
         ? Math.round(
@@ -267,6 +278,8 @@ export async function processMatchRank(matchId) {
     throw new Error("A partida não possui jogadores confirmados.");
   }
 
+  const isDraw = match.teamAScore === match.teamBScore || !match.winnerSide;
+
   for (const presence of players) {
     const stat = Array.isArray(match.stats)
       ? match.stats.find((item) => item.userId === presence.userId)
@@ -274,10 +287,12 @@ export async function processMatchRank(matchId) {
 
     let result = "LOSS";
 
-    if (!match.winnerSide) {
+    if (isDraw) {
       result = "DRAW";
     } else if (presence.teamSide && presence.teamSide === match.winnerSide) {
       result = "WIN";
+    } else {
+      result = "LOSS";
     }
 
     await updatePlayerRankAfterMatch({

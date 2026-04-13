@@ -1,0 +1,6 @@
+-- AlterEnum
+ALTER TYPE "FeedPostType" ADD VALUE 'DRAW';
+
+-- AlterTable
+ALTER TABLE "MatchPlayerStat" ADD COLUMN     "draws" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "losses" INTEGER NOT NULL DEFAULT 0;

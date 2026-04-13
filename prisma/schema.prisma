@@ -90,6 +90,7 @@ enum FeedPostType {
   ASSIST
   WIN
   LOSS
+  DRAW
   CHECKIN
   MVP
 }
@@ -157,30 +158,30 @@ model User {
 }
 
 model PlayerRank {
-  id             String   @id @default(cuid())
-  userId         String   @unique
+  id     String @id @default(cuid())
+  userId String @unique
 
-  rating         Int      @default(1000)
-  wins           Int      @default(0)
-  losses         Int      @default(0)
-  draws          Int      @default(0)
-  matches        Int      @default(0)
+  rating  Int @default(1000)
+  wins    Int @default(0)
+  losses  Int @default(0)
+  draws   Int @default(0)
+  matches Int @default(0)
 
-  goals          Int      @default(0)
-  assists        Int      @default(0)
-  mvpCount       Int      @default(0)
+  goals    Int @default(0)
+  assists  Int @default(0)
+  mvpCount Int @default(0)
 
-  winStreak      Int      @default(0)
-  bestWinStreak  Int      @default(0)
+  winStreak     Int @default(0)
+  bestWinStreak Int @default(0)
 
-  tier           String   @default("Bronze")
-  progress       Int      @default(0)
-  rankPosition   Int      @default(0)
+  tier         String @default("Bronze")
+  progress     Int    @default(0)
+  rankPosition Int    @default(0)
 
-  season         String   @default("global")
+  season String @default("global")
 
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -283,8 +284,8 @@ model Match {
   court   Court?  @relation(fields: [courtId], references: [id], onDelete: Cascade)
 
   // dados manuais do local
-  manualArenaName String?
-  manualAddress   String?
+  manualArenaName  String?
+  manualAddress    String?
   isManualLocation Boolean @default(false)
 
   maxPlayers     Int @default(14)
@@ -371,7 +372,10 @@ model MatchPlayerStat {
   assistsOfficial   Int @default(0)
   goalsUnofficial   Int @default(0)
   assistsUnofficial Int @default(0)
-  wins              Int @default(0)
+
+  wins   Int @default(0)
+  losses Int @default(0)
+  draws  Int @default(0)
 
   match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -418,12 +422,12 @@ model MatchEvent {
 }
 
 model FeedPost {
-  id       String       @id @default(cuid())
-  userId   String
-  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  matchId  String?
-  match    Match?       @relation(fields: [matchId], references: [id], onDelete: SetNull)
+  matchId String?
+  match   Match?  @relation(fields: [matchId], references: [id], onDelete: SetNull)
 
   type     FeedPostType @default(POST)
   text     String

@@ -17,7 +17,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v15_brazil_timezone_fix",
+    version: "matches_routes_v16_draw_fix",
   });
 });
 
@@ -183,16 +183,6 @@ function getArenaLabel(match) {
   return match?.court?.arena?.name || match?.manualArenaName || "";
 }
 
-/**
- * Converte data/hora enviada pelo front como horário de São Paulo
- * e salva corretamente em UTC no banco.
- *
- * Exemplos aceitos:
- * - 2026-04-01T20:00
- * - 2026-04-01 20:00:00
- * - 2026-04-01T20:00:00
- * - ISO já com timezone
- */
 function parseBrazilDateTimeToUTC(value) {
   if (!value) return null;
 
@@ -219,10 +209,6 @@ function parseBrazilDateTimeToUTC(value) {
   return parsed.utc().toDate();
 }
 
-/**
- * Para filtros públicos por dia.
- * Interpreta a data como São Paulo e monta início/fim do dia corretamente.
- */
 function parseBrazilDate(value) {
   if (!value) return null;
 
@@ -1109,6 +1095,8 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       },
     });
 
+    const isDraw = matchBefore?.teamAScore === matchBefore?.teamBScore;
+
     const winnerSide =
       matchBefore?.teamAScore > matchBefore?.teamBScore
         ? "A"
@@ -1121,7 +1109,7 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
 
     for (const userId of userIds) {
       const participant = participants.find((p) => p.userId === userId);
-      const didWin = winnerSide && participant?.teamSide === winnerSide;
+      const didWin = !isDraw && winnerSide && participant?.teamSide === winnerSide;
 
       await prisma.matchPlayerStat
         .upsert({
@@ -1149,6 +1137,7 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
       data: {
         status: "FINISHED",
         finishedAt: new Date(),
+        winnerSide: isDraw ? null : winnerSide,
       },
       include: includePremium,
     });
@@ -1164,20 +1153,26 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
     }
 
     for (const participant of participants) {
-      const didWin = winnerSide && participant?.teamSide === winnerSide;
+      const didWin = !isDraw && winnerSide && participant?.teamSide === winnerSide;
+
+      const feedType = isDraw ? "DRAW" : didWin ? "WIN" : "LOSS";
+      const feedText = isDraw
+        ? "Partida encerrada em empate. Cada ponto conta."
+        : didWin
+        ? "Saiu com a vitória e somou mais uma grande atuação."
+        : "Partida encerrada. Hora de voltar mais forte na próxima.";
 
       await createFeedPost({
         userId: participant.userId,
         matchId,
-        type: didWin ? "WIN" : "LOSS",
-        text: didWin
-          ? "Saiu com a vitória e somou mais uma grande atuação."
-          : "Partida encerrada. Hora de voltar mais forte na próxima.",
+        type: feedType,
+        text: feedText,
         meta: {
           score: `${match.teamAScore} x ${match.teamBScore}`,
           arena: getArenaLabel(match),
           matchTitle: match?.title || "",
-          winnerSide,
+          winnerSide: isDraw ? null : winnerSide,
+          isDraw,
         },
       });
     }
