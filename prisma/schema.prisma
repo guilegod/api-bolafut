@@ -119,6 +119,9 @@ model User {
   // partidas controladas
   controlledMatches Match[] @relation("MatchController")
 
+  // locais cadastrados para peladas públicas
+  createdPeladaLocations PeladaLocation[] @relation("PeladaLocationCreatedBy")
+
   // presenças em partidas
   presences MatchPresence[]
 
@@ -269,6 +272,25 @@ model Court {
   @@index([arenaOwnerId])
 }
 
+model PeladaLocation {
+  id       String  @id @default(cuid())
+  name     String
+  address  String
+  isActive Boolean @default(true)
+
+  createdById String?
+  createdBy   User?   @relation("PeladaLocationCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  matches Match[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+  @@index([createdById])
+  @@index([name])
+}
+
 model Match {
   id    String    @id @default(cuid())
   title String
@@ -279,9 +301,13 @@ model Match {
   organizerId String
   organizer   User   @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
 
-  // agora opcional para aceitar pelada manual
+  // quadra (quando a partida é vinculada a arena/quadra)
   courtId String?
   court   Court?  @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  // local cadastrado para pelada pública
+  peladaLocationId String?
+  peladaLocation   PeladaLocation? @relation(fields: [peladaLocationId], references: [id], onDelete: SetNull)
 
   // dados manuais do local
   manualArenaName  String?
@@ -321,6 +347,7 @@ model Match {
   @@index([date])
   @@index([organizerId])
   @@index([courtId])
+  @@index([peladaLocationId])
   @@index([kind])
   @@index([controllerId])
   @@index([status])
