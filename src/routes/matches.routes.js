@@ -17,7 +17,7 @@ const router = Router();
 router.get("/__version", (req, res) => {
   res.json({
     ok: true,
-    version: "matches_routes_v16_draw_fix",
+    version: "matches_routes_v17_pelada_location",
   });
 });
 
@@ -35,6 +35,7 @@ const includePremium = {
       arena: true,
     },
   },
+  peladaLocation: true,
   presences: {
     select: {
       id: true,
@@ -76,6 +77,7 @@ const includePublic = {
       arena: true,
     },
   },
+  peladaLocation: true,
   presences: {
     select: {
       id: true,
@@ -125,6 +127,7 @@ const matchCreateSchema = z.object({
     .default("FUT7"),
 
   courtId: z.string().min(3).optional().nullable(),
+  peladaLocationId: z.string().min(3).optional().nullable(),
   manualArenaName: z.string().min(2).max(120).optional().nullable(),
   manualAddress: z.string().min(2).max(180).optional().nullable(),
   isManualLocation: z.coerce.boolean().optional(),
@@ -180,7 +183,12 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
 }
 
 function getArenaLabel(match) {
-  return match?.court?.arena?.name || match?.manualArenaName || "";
+  return (
+    match?.court?.arena?.name ||
+    match?.peladaLocation?.name ||
+    match?.manualArenaName ||
+    ""
+  );
 }
 
 function parseBrazilDateTimeToUTC(value) {
@@ -315,6 +323,13 @@ async function getControllerLockedMatch(matchId) {
       manualArenaName: true,
       manualAddress: true,
       isManualLocation: true,
+      peladaLocation: {
+        select: {
+          id: true,
+          name: true,
+          address: true,
+        },
+      },
       court: {
         select: {
           arena: {
@@ -647,16 +662,22 @@ router.post("/peladas", authRequired, async (req, res) => {
     const hasPeladaLocation = Boolean(peladaLocationIdStr);
     const isManualLocation = !hasCourt && !hasPeladaLocation;
 
-    // ❌ evitar conflito
     if (hasCourt && hasPeladaLocation) {
       return res.status(400).json({
         message: "Dados inválidos",
-        error: "Use apenas courtId OU peladaLocationId",
+        error: "Use apenas courtId OU peladaLocationId.",
+      });
+    }
+
+    if (hasPeladaLocation && (manualArenaName || manualAddress)) {
+      return res.status(400).json({
+        message: "Dados inválidos",
+        error: "Não envie manualArenaName/manualAddress junto com peladaLocationId.",
       });
     }
 
     /* ======================================================
-       🔥 LOCAL CADASTRADO (NOVO)
+       🔥 LOCAL CADASTRADO
        ====================================================== */
     if (hasPeladaLocation) {
       const peladaLocation = await prisma.peladaLocation.findUnique({
@@ -665,7 +686,8 @@ router.post("/peladas", authRequired, async (req, res) => {
 
       if (!peladaLocation || !peladaLocation.isActive) {
         return res.status(400).json({
-          message: "Local inválido",
+          message: "Dados inválidos",
+          error: "Local cadastrado não encontrado ou inativo.",
         });
       }
 
@@ -703,24 +725,29 @@ router.post("/peladas", authRequired, async (req, res) => {
         },
       });
 
-      return res.status(201).json(match);
+      const updated = await prisma.match.findUnique({
+        where: { id: match.id },
+        include: includePremium,
+      });
+
+      return res.status(201).json(updated || match);
     }
 
     /* ======================================================
-       🔥 MANUAL (COM REGRA DE ROLE)
+       🔥 MANUAL
        ====================================================== */
     if (isManualLocation) {
-      // ❌ OWNER NÃO PODE
       if (user.role === "owner") {
         return res.status(403).json({
-          message: "Owner só pode usar locais cadastrados",
+          message: "Owner só pode criar peladas em locais cadastrados",
         });
       }
 
       if (!manualArenaName || !manualAddress) {
         return res.status(400).json({
           message: "Dados inválidos",
-          error: "Informe nome e endereço",
+          error:
+            "Para pelada manual, informe manualArenaName e manualAddress.",
         });
       }
 
@@ -758,11 +785,16 @@ router.post("/peladas", authRequired, async (req, res) => {
         },
       });
 
-      return res.status(201).json(match);
+      const updated = await prisma.match.findUnique({
+        where: { id: match.id },
+        include: includePremium,
+      });
+
+      return res.status(201).json(updated || match);
     }
 
     /* ======================================================
-       🔥 QUADRA (SEM ALTERAÇÃO)
+       🔥 QUADRA (mantido com validações originais)
        ====================================================== */
 
     const court = await prisma.court.findUnique({
@@ -771,8 +803,71 @@ router.post("/peladas", authRequired, async (req, res) => {
     });
 
     if (!court) {
-      return res.status(400).json({
-        message: "courtId inválido",
+      return res
+        .status(400)
+        .json({ message: "Dados inválidos", error: "courtId não existe." });
+    }
+
+    if (isRole(user, ["arena_owner"])) {
+      const legacyOk = court.arenaOwnerId === user.id;
+      const newOk = court.arena?.ownerId === user.id;
+
+      if (!legacyOk && !newOk) {
+        return res.status(403).json({
+          message: "Você só pode criar peladas nas suas próprias quadras",
+        });
+      }
+    }
+
+    const conflictReservation = await prisma.reservation.findFirst({
+      where: {
+        courtId: courtIdStr,
+        status: { not: "CANCELED" },
+        startAt: { lt: matchEnd },
+        endAt: { gt: matchStart },
+      },
+      select: {
+        id: true,
+        startAt: true,
+        endAt: true,
+        status: true,
+        paymentStatus: true,
+      },
+    });
+
+    if (conflictReservation) {
+      return res.status(409).json({
+        message: "Horário já reservado (Reservation)",
+        conflict: { type: "reservation", ...conflictReservation },
+      });
+    }
+
+    const windowStart = addMinutes(matchStart, -180);
+    const windowEnd = addMinutes(matchEnd, 180);
+
+    const nearMatches = await prisma.match.findMany({
+      where: {
+        courtId: courtIdStr,
+        date: { gte: windowStart, lte: windowEnd },
+      },
+      select: { id: true, date: true, title: true },
+    });
+
+    const conflictMatch = nearMatches.find((m) => {
+      const mStart = new Date(m.date);
+      const mEnd = addMinutes(mStart, 60);
+      return overlaps(matchStart, matchEnd, mStart, mEnd);
+    });
+
+    if (conflictMatch) {
+      return res.status(409).json({
+        message: "Horário já ocupado por outra partida (Match)",
+        conflict: {
+          type: "match",
+          id: conflictMatch.id,
+          date: conflictMatch.date,
+          title: conflictMatch.title,
+        },
       });
     }
 
@@ -784,6 +879,7 @@ router.post("/peladas", authRequired, async (req, res) => {
         organizerId: user.id,
         controllerId: data.controllerId || user.id,
         courtId: courtIdStr,
+        peladaLocationId: null,
         manualArenaName: null,
         manualAddress: null,
         isManualLocation: false,
@@ -809,13 +905,16 @@ router.post("/peladas", authRequired, async (req, res) => {
       },
     });
 
-    return res.status(201).json(match);
-
-  } catch (e) {
-    return res.status(400).json({
-      message: "Erro",
-      error: String(e),
+    const updated = await prisma.match.findUnique({
+      where: { id: match.id },
+      include: includePremium,
     });
+
+    return res.status(201).json(updated || match);
+  } catch (e) {
+    return res
+      .status(400)
+      .json({ message: "Dados inválidos", error: String(e) });
   }
 });
 
@@ -1080,6 +1179,13 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
         manualArenaName: true,
         manualAddress: true,
         isManualLocation: true,
+        peladaLocation: {
+          select: {
+            id: true,
+            name: true,
+            address: true,
+          },
+        },
         teamAName: true,
         teamBName: true,
         teamAScore: true,
