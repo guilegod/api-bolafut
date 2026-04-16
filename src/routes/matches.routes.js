@@ -631,6 +631,57 @@ router.get("/peladas", async (req, res) => {
       .json({ message: "Erro ao listar peladas", error: String(e) });
   }
 });
+/* ======================================================
+   🔓 DETALHE PÚBLICO (SEM LOGIN)
+   ====================================================== */
+
+router.get("/public/:id([a-z0-9]{20,})", async (req, res) => {
+  try {
+    const matchId = String(req.params.id || "").trim();
+
+    const match = await maybeAutoExpireMatch(matchId, {
+      returnUpdatedOnly: false,
+      currentMatch: null,
+      include: includePublic,
+    });
+
+    if (!match) {
+      return res.status(404).json({ message: "Partida não encontrada" });
+    }
+
+    // 🔥 só permite PELADA pública
+    if (match.kind !== "PELADA") {
+      return res.status(403).json({
+        message: "Esta partida não está disponível publicamente",
+      });
+    }
+
+    // 🔐 suporte futuro: senha
+    if (match.isPrivate) {
+      const password =
+        req.query.password ||
+        req.headers["x-match-password"];
+
+      if (!password || password !== match.accessPassword) {
+        return res.status(401).json({
+          message: "Senha necessária",
+        });
+      }
+    }
+
+    // 🔒 remove senha da resposta
+    if (match.accessPassword) {
+      delete match.accessPassword;
+    }
+
+    return res.json(match);
+  } catch (e) {
+    return res.status(500).json({
+      message: "Erro ao buscar partida pública",
+      error: String(e),
+    });
+  }
+});
 
 router.post("/peladas", authRequired, async (req, res) => {
   try {
@@ -1256,7 +1307,7 @@ router.patch("/:id([a-z0-9]{20,})/finish", authRequired, async (req, res) => {
     try {
       await processMatchRank(matchId);
     } catch (rankError) {
-      error("Erro ao processar rank:", rankError);
+      console.error("Erro ao processar rank:", rankError);
       return res.status(500).json({
         message: "Partida finalizada, mas o rank falhou.",
         error: String(rankError),

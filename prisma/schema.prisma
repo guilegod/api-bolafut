@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum Role {
@@ -314,6 +315,10 @@ model Match {
   manualAddress    String?
   isManualLocation Boolean @default(false)
 
+  // privacidade / senha
+  isPrivate      Boolean @default(false)
+  accessPassword String?
+
   maxPlayers     Int @default(14)
   pricePerPlayer Int @default(30)
 
@@ -353,6 +358,7 @@ model Match {
   @@index([status])
   @@index([rankProcessed])
   @@index([isManualLocation])
+  @@index([isPrivate])
 }
 
 model MatchPresence {
