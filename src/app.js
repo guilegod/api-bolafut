@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import helmet from "helmet";
+import { rateLimit } from "express-rate-limit";
 
 dotenv.config();
 
@@ -14,36 +16,109 @@ import reservationsRoutes from "./routes/reservations.routes.js";
 import friendsRoutes from "./routes/friends.routes.js";
 import rankRoutes from "./routes/rank.routes.js";
 import peladaLocationRoutes from "./routes/peladaLocation.routes.js";
-
-// ✅ NOVO
 import usersRoutes from "./routes/users.routes.js";
 import presenceRoutes from "./routes/presence.routes.js";
 
 export const app = express();
 
-// ✅ behind proxy (Render / Nginx / etc.)
+// --------------------------------------------------
+// TRUST PROXY
+// --------------------------------------------------
 app.set("trust proxy", 1);
 
-// ✅ JSON body
-app.use(express.json({ limit: "1mb" }));
+// --------------------------------------------------
+// CONFIG
+// --------------------------------------------------
+const isProduction = process.env.NODE_ENV === "production";
 
-// ✅ CORS
+const allowedOrigins = [
+  "https://borapo.com",
+  "https://www.borapo.com",
+  "https://borapo.online",
+  "https://www.borapo.online",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+].filter(Boolean);
+
+// --------------------------------------------------
+// SEGURANÇA BÁSICA
+// --------------------------------------------------
 app.use(
-  cors({
-    origin: true,
-    credentials: true,
+  helmet({
+    crossOriginResourcePolicy: false,
   })
 );
 
-// ✅ Preflight
-app.options("*", cors({ origin: true, credentials: true }));
+// --------------------------------------------------
+// CORS FECHADO
+// --------------------------------------------------
+const corsOptions = {
+  origin(origin, callback) {
+    // Permite ferramentas sem origin (Postman, curl, health checks server-to-server)
+    if (!origin) {
+      return callback(null, true);
+    }
 
-// ✅ rotas
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`CORS bloqueado para origem: ${origin}`));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+// --------------------------------------------------
+// RATE LIMIT
+// --------------------------------------------------
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: isProduction ? 300 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: "Muitas requisições. Tente novamente em alguns minutos.",
+  },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 min
+  max: isProduction ? 20 : 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: "Muitas tentativas de autenticação. Aguarde alguns minutos.",
+  },
+});
+
+app.use(globalLimiter);
+
+// --------------------------------------------------
+// BODY PARSER
+// --------------------------------------------------
+app.use(express.json({ limit: "1mb" }));
+
+// --------------------------------------------------
+// HEALTH
+// --------------------------------------------------
+app.get("/", (req, res) => {
+  res.status(200).send("ok");
+});
+
+// --------------------------------------------------
+// ROTAS
+// --------------------------------------------------
 app.use(healthRoutes);
-app.use("/auth", authRoutes);
 
-app.use("/users", usersRoutes);        // ✅ /users/me/profile
-app.use("/presence", presenceRoutes);  // ✅ /presence/heartbeat e /presence/friends
+app.use("/auth", authLimiter, authRoutes);
+
+app.use("/users", usersRoutes);
+app.use("/presence", presenceRoutes);
 
 app.use("/arenas", arenasRoutes);
 app.use("/courts", courtsRoutes);
@@ -54,15 +129,36 @@ app.use("/friends", friendsRoutes);
 app.use("/rank", rankRoutes);
 app.use("/pelada-locations", peladaLocationRoutes);
 
-// ✅ 404 sempre por último
+// --------------------------------------------------
+// 404
+// --------------------------------------------------
 app.use((req, res) => {
-  res.status(404).json({ message: "Rota não encontrada", path: req.originalUrl });
+  res.status(404).json({
+    message: "Rota não encontrada",
+    path: req.originalUrl,
+  });
 });
 
-// ✅ handler global de erro (opcional, mas bom)
+// --------------------------------------------------
+// ERROR HANDLER
+// --------------------------------------------------
 app.use((err, req, res, next) => {
-  console.error("❌ ERRO:", err);
-  res.status(err.statusCode || err.status || 500).json({
-    message: err.message || "Erro interno do servidor",
+  const statusCode = err.statusCode || err.status || 500;
+
+  if (!isProduction) {
+    console.error("❌ ERRO:", err);
+  }
+
+  if (err.message?.startsWith("CORS bloqueado")) {
+    return res.status(403).json({
+      message: "Origem não permitida por CORS",
+    });
+  }
+
+  return res.status(statusCode).json({
+    message:
+      statusCode === 500 && isProduction
+        ? "Erro interno do servidor"
+        : err.message || "Erro interno do servidor",
   });
 });

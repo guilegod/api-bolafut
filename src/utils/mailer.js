@@ -12,7 +12,7 @@ export function makeMailer() {
   const from = process.env.SMTP_FROM || user || "suporte@borapo.com";
 
   if (!user || !pass) {
-    console.warn("[mailer] SMTP_USER/SMTP_PASS não configurados");
+    warn("[mailer] SMTP_USER/SMTP_PASS não configurados");
   }
 
   const transporter = nodemailer.createTransport({

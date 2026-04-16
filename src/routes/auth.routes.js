@@ -138,7 +138,7 @@ router.post("/forgot", async (req, res) => {
 
     // ✅ Se SMTP não estiver configurado, não derruba o fluxo
     if (!isReady) {
-      console.warn("[forgot] SMTP não configurado — pulando envio de email");
+      warn("[forgot] SMTP não configurado — pulando envio de email");
       return res.json({ ok: true });
     }
 
@@ -162,9 +162,9 @@ router.post("/forgot", async (req, res) => {
         `,
       });
 
-      console.log("[forgot] email enviado para:", user.email);
+      ("[forgot] email enviado para:", user.email);
     } catch (err) {
-      console.error("[forgot] falha ao enviar email:", err);
+      error("[forgot] falha ao enviar email:", err);
       // ✅ não retorna 400, não trava fluxo
     }
 
