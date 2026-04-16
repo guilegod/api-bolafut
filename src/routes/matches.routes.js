@@ -110,6 +110,7 @@ const includePublic = {
 const matchCreateSchema = z.object({
   title: z.string().min(2),
   date: z.string().min(5),
+
   type: z
     .enum([
       "FUTSAL",
@@ -126,13 +127,14 @@ const matchCreateSchema = z.object({
     ])
     .default("FUT7"),
 
+  // 👇 NOVO
+  isPrivate: z.coerce.boolean().optional(),
+  accessPassword: z.string().min(3).max(20).optional(),
+
   courtId: z.string().min(3).optional().nullable(),
   peladaLocationId: z.string().min(3).optional().nullable(),
   manualArenaName: z.string().min(2).max(120).optional().nullable(),
   manualAddress: z.string().min(2).max(180).optional().nullable(),
-  isManualLocation: z.coerce.boolean().optional(),
-
-  kind: z.enum(["BOOKING", "PELADA"]).optional(),
 
   maxPlayers: z.coerce.number().int().min(2).max(40).optional(),
   pricePerPlayer: z.coerce.number().int().min(0).max(9999).optional(),
@@ -621,7 +623,11 @@ router.get("/peladas", async (req, res) => {
         currentMatch: m,
         include: includePublic,
       });
-      updated.push(maybe || m);
+
+      const safeMatch = { ...(maybe || m) };
+      delete safeMatch.accessPassword;
+
+      updated.push(safeMatch);
     }
 
     return res.json(updated);
@@ -649,32 +655,37 @@ router.get("/public/:id([a-z0-9]{20,})", async (req, res) => {
       return res.status(404).json({ message: "Partida não encontrada" });
     }
 
-    // 🔥 só permite PELADA pública
     if (match.kind !== "PELADA") {
       return res.status(403).json({
         message: "Esta partida não está disponível publicamente",
       });
     }
 
-    // 🔐 suporte futuro: senha
     if (match.isPrivate) {
-      const password =
-        req.query.password ||
-        req.headers["x-match-password"];
+      const password = String(
+        req.body?.password ||
+          req.query?.password ||
+          req.headers["x-match-password"] ||
+          ""
+      ).trim();
 
-      if (!password || password !== match.accessPassword) {
+      if (!password) {
         return res.status(401).json({
-          message: "Senha necessária",
+          message: "Senha obrigatória para acessar esta partida.",
+        });
+      }
+
+      if (password !== String(match.accessPassword || "").trim()) {
+        return res.status(401).json({
+          message: "Senha inválida.",
         });
       }
     }
 
-    // 🔒 remove senha da resposta
-    if (match.accessPassword) {
-      delete match.accessPassword;
-    }
+    const safeMatch = { ...match };
+    delete safeMatch.accessPassword;
 
-    return res.json(match);
+    return res.json(safeMatch);
   } catch (e) {
     return res.status(500).json({
       message: "Erro ao buscar partida pública",
@@ -694,6 +705,13 @@ router.post("/peladas", authRequired, async (req, res) => {
     }
 
     const data = matchCreateSchema.parse({ ...req.body, kind: "PELADA" });
+
+    // 🔒 validação obrigatória de senha
+    if (data.isPrivate && !data.accessPassword) {
+      return res.status(400).json({
+        message: "Partida privada precisa de senha",
+      });
+    }
 
     const matchStart = parseBrazilDateTimeToUTC(data.date);
     if (!matchStart || Number.isNaN(matchStart.getTime())) {
@@ -742,30 +760,36 @@ router.post("/peladas", authRequired, async (req, res) => {
         });
       }
 
-      const match = await prisma.match.create({
-        data: {
-          title: data.title,
-          date: matchStart,
-          type: data.type,
-          organizerId: user.id,
-          controllerId: data.controllerId || user.id,
-          courtId: null,
-          peladaLocationId: peladaLocation.id,
-          manualArenaName: null,
-          manualAddress: null,
-          isManualLocation: false,
-          teamAName: data.teamAName || "Time A",
-          teamBName: data.teamBName || "Time B",
-          teamAScore: 0,
-          teamBScore: 0,
-          maxPlayers: data.maxPlayers ?? 14,
-          minPlayers: data.minPlayers ?? 0,
-          pricePerPlayer: data.pricePerPlayer ?? 30,
-          status: "SCHEDULED",
-          kind: "PELADA",
-        },
-        include: includePremium,
-      });
+    const match = await prisma.match.create({
+      data: {
+        title: data.title,
+        date: matchStart,
+        type: data.type,
+        organizerId: user.id,
+        controllerId: data.controllerId || user.id,
+        courtId: null,
+        peladaLocationId: peladaLocation.id,
+        manualArenaName: null,
+        manualAddress: null,
+        isManualLocation: false,
+
+        isPrivate: data.isPrivate ?? false,
+        accessPassword: data.isPrivate
+          ? String(data.accessPassword || "").trim()
+          : null,
+
+        teamAName: data.teamAName || "Time A",
+        teamBName: data.teamBName || "Time B",
+        teamAScore: 0,
+        teamBScore: 0,
+        maxPlayers: data.maxPlayers ?? 14,
+        minPlayers: data.minPlayers ?? 0,
+        pricePerPlayer: data.pricePerPlayer ?? 30,
+        status: "SCHEDULED",
+        kind: "PELADA",
+      },
+      include: includePremium,
+    });
 
       await prisma.matchPresence.create({
         data: {
@@ -814,6 +838,13 @@ router.post("/peladas", authRequired, async (req, res) => {
           manualArenaName,
           manualAddress,
           isManualLocation: true,
+
+          // 🔥 ADICIONA AQUI
+          isPrivate: data.isPrivate ?? false,
+          accessPassword: data.isPrivate
+            ? String(data.accessPassword || "").trim()
+            : null,
+
           teamAName: data.teamAName || "Time A",
           teamBName: data.teamBName || "Time B",
           teamAScore: 0,
@@ -923,29 +954,35 @@ router.post("/peladas", authRequired, async (req, res) => {
     }
 
     const match = await prisma.match.create({
-      data: {
-        title: data.title,
-        date: matchStart,
-        type: data.type,
-        organizerId: user.id,
-        controllerId: data.controllerId || user.id,
-        courtId: courtIdStr,
-        peladaLocationId: null,
-        manualArenaName: null,
-        manualAddress: null,
-        isManualLocation: false,
-        teamAName: data.teamAName || "Time A",
-        teamBName: data.teamBName || "Time B",
-        teamAScore: 0,
-        teamBScore: 0,
-        maxPlayers: data.maxPlayers ?? 14,
-        minPlayers: data.minPlayers ?? 0,
-        pricePerPlayer: data.pricePerPlayer ?? 30,
-        status: "SCHEDULED",
-        kind: "PELADA",
-      },
-      include: includePremium,
-    });
+        data: {
+          title: data.title,
+          date: matchStart,
+          type: data.type,
+          organizerId: user.id,
+          controllerId: data.controllerId || user.id,
+          courtId: courtIdStr,
+          peladaLocationId: null,
+          manualArenaName: null,
+          manualAddress: null,
+          isManualLocation: false,
+
+          isPrivate: data.isPrivate ?? false,
+          accessPassword: data.isPrivate
+            ? String(data.accessPassword || "").trim()
+            : null,
+
+          teamAName: data.teamAName || "Time A",
+          teamBName: data.teamBName || "Time B",
+          teamAScore: 0,
+          teamBScore: 0,
+          maxPlayers: data.maxPlayers ?? 14,
+          minPlayers: data.minPlayers ?? 0,
+          pricePerPlayer: data.pricePerPlayer ?? 30,
+          status: "SCHEDULED",
+          kind: "PELADA",
+        },
+        include: includePremium,
+      });
 
     await prisma.matchPresence.create({
       data: {
@@ -1155,6 +1192,14 @@ router.post("/", authRequired, async (req, res) => {
         manualArenaName: null,
         manualAddress: null,
         isManualLocation: false,
+
+        // 🔥 AQUI
+        isPrivate: data.isPrivate ?? false,
+        accessPassword:
+          data.isPrivate && data.accessPassword
+            ? String(data.accessPassword).trim()
+            : null,
+
         teamAName: data.teamAName || "Time A",
         teamBName: data.teamBName || "Time B",
         teamAScore: 0,
@@ -1923,6 +1968,27 @@ router.post("/:id([a-z0-9]{20,})/join", authRequired, async (req, res) => {
 
     if (!match) {
       return res.status(404).json({ message: "Partida não encontrada" });
+    }
+
+    if (match.isPrivate) {
+      const password = String(
+        req.body?.password ||
+          req.query?.password ||
+          req.headers["x-match-password"] ||
+          ""
+      ).trim();
+
+      if (!password) {
+        return res.status(401).json({
+          message: "Senha obrigatória para entrar nesta partida.",
+        });
+      }
+
+      if (password !== String(match.accessPassword || "").trim()) {
+        return res.status(401).json({
+          message: "Senha inválida.",
+        });
+      }
     }
 
     if (["CANCELED", "EXPIRED", "FINISHED"].includes(match.status)) {
