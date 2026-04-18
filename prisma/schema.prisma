@@ -96,6 +96,13 @@ enum FeedPostType {
   MVP
 }
 
+enum ProfileBannerType {
+  STATIC
+  GIF
+  VIDEO
+  THEME
+}
+
 model User {
   id       String  @id @default(cuid())
   name     String
@@ -104,6 +111,10 @@ model User {
   imageUrl String?
   password String
   role     Role    @default(user)
+
+  // premium
+  isPremium    Boolean   @default(false)
+  premiumUntil DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -159,6 +170,9 @@ model User {
 
   // ranking
   rank PlayerRank?
+
+  @@index([isPremium])
+  @@index([premiumUntil])
 }
 
 model PlayerRank {
@@ -537,8 +551,25 @@ model Profile {
 
   tags Json?
 
+  // personalização premium / visual
+  avatarUrl         String?
+  avatarFrame       String?
+  profileTheme      String?           @default("default")
+  bannerType        ProfileBannerType @default(STATIC)
+  bannerAnimatedUrl String?
+  bannerVideoUrl    String?
+  bannerOverlay     String?
+  bannerPosition    String?
+  showPremiumBadge  Boolean           @default(false)
+  equippedBadge     String?
+  glowEffect        String?
+  cardEffect        String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([profileTheme])
+  @@index([bannerType])
 }
 
 model FriendRequest {

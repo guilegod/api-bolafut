@@ -1,6 +1,6 @@
 import { prisma } from "../../lib/prisma.js";
 
-function getTier(rating) {
+function getTierFromRating(rating) {
   if (rating < 100) return "Bronze";
   if (rating < 200) return "Prata";
   if (rating < 400) return "Ouro";
@@ -17,14 +17,31 @@ function getNextTier(tier) {
 }
 
 function clampProgress(value) {
-  return Math.max(0, Math.min(100, value));
+  return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+function safeString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function safeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function resolveAvatarUrl(user) {
+  return user?.profile?.avatarUrl || user?.imageUrl || "";
+}
+
+function resolveFeedAvatar(item) {
+  return item?.user?.profile?.avatarUrl || item?.user?.imageUrl || "";
 }
 
 function buildAchievements(stats, history) {
-  const matches = stats.matches || 0;
-  const goals = stats.goals || 0;
-  const assists = stats.assists || 0;
-  const wins = stats.wins || 0;
+  const matches = safeNumber(stats.matches);
+  const goals = safeNumber(stats.goals);
+  const assists = safeNumber(stats.assists);
+  const wins = safeNumber(stats.wins);
 
   const streak = (() => {
     let current = 0;
@@ -100,13 +117,13 @@ function buildAchievements(stats, history) {
   ];
 }
 
-function buildRank(stats) {
+function buildFallbackRank(stats) {
   const rating =
-    (stats.wins || 0) * 12 +
-    (stats.goals || 0) * 3 +
-    (stats.assists || 0) * 2;
+    safeNumber(stats.wins) * 12 +
+    safeNumber(stats.goals) * 3 +
+    safeNumber(stats.assists) * 2;
 
-  const tier = getTier(rating);
+  const tier = getTierFromRating(rating);
 
   return {
     tier,
@@ -114,9 +131,84 @@ function buildRank(stats) {
     rankPosition: 0,
     nextTier: getNextTier(tier),
     progress: clampProgress(rating % 100),
-    wins: stats.wins || 0,
-    matches: stats.matches || 0,
+    wins: safeNumber(stats.wins),
+    losses: safeNumber(stats.losses),
+    draws: safeNumber(stats.draws),
+    matches: safeNumber(stats.matches),
+    goals: safeNumber(stats.goals),
+    assists: safeNumber(stats.assists),
+    winStreak: 0,
+    bestWinStreak: 0,
+    season: "global",
   };
+}
+
+function buildRankFromPlayerRank(playerRank, stats) {
+  if (!playerRank) {
+    return buildFallbackRank(stats);
+  }
+
+  const rating = safeNumber(playerRank.rating, 1000);
+  const tier = safeString(playerRank.tier, getTierFromRating(rating));
+
+  return {
+    tier,
+    rating,
+    rankPosition: safeNumber(playerRank.rankPosition),
+    nextTier: getNextTier(tier),
+    progress: clampProgress(playerRank.progress),
+    wins: safeNumber(playerRank.wins),
+    losses: safeNumber(playerRank.losses),
+    draws: safeNumber(playerRank.draws),
+    matches: safeNumber(playerRank.matches),
+    goals: safeNumber(playerRank.goals),
+    assists: safeNumber(playerRank.assists),
+    winStreak: safeNumber(playerRank.winStreak),
+    bestWinStreak: safeNumber(playerRank.bestWinStreak),
+    mvpCount: safeNumber(playerRank.mvpCount),
+    season: safeString(playerRank.season, "global"),
+  };
+}
+
+function buildHistory(matchesPlayed, userId) {
+  return matchesPlayed.map((match) => {
+    const presence = match.presences.find((p) => p.userId === userId);
+
+    let result = null;
+
+    if (match.teamAScore === match.teamBScore && match.status === "FINISHED") {
+      result = "draw";
+    } else if (match.winnerSide && presence?.teamSide) {
+      result = presence.teamSide === match.winnerSide ? "win" : "loss";
+    }
+
+    return {
+      id: match.id,
+      type: String(match.kind || "PELADA").toLowerCase(),
+      status: String(match.status || "SCHEDULED").toLowerCase(),
+      title: match.title,
+      arena:
+        match.court?.arena?.name ||
+        match.manualArenaName ||
+        match.peladaLocation?.name ||
+        "Arena",
+      address:
+        match.court?.arena?.address ||
+        match.manualAddress ||
+        match.peladaLocation?.address ||
+        "",
+      date: match.date,
+      result,
+      teamSide: presence?.teamSide || null,
+      score: `${safeNumber(match.teamAScore)} x ${safeNumber(match.teamBScore)}`,
+      teamAName: match.teamAName || "Time A",
+      teamBName: match.teamBName || "Time B",
+      teamAScore: safeNumber(match.teamAScore),
+      teamBScore: safeNumber(match.teamBScore),
+      isPrivate: Boolean(match.isPrivate),
+      isManualLocation: Boolean(match.isManualLocation),
+    };
+  });
 }
 
 export async function getUserProfileDashboardById(userId) {
@@ -124,6 +216,7 @@ export async function getUserProfileDashboardById(userId) {
     where: { id: userId },
     include: {
       profile: true,
+      rank: true,
     },
   });
 
@@ -146,6 +239,7 @@ export async function getUserProfileDashboardById(userId) {
           arena: true,
         },
       },
+      peladaLocation: true,
       presences: {
         select: {
           userId: true,
@@ -165,6 +259,11 @@ export async function getUserProfileDashboardById(userId) {
           id: true,
           name: true,
           imageUrl: true,
+          profile: {
+            select: {
+              avatarUrl: true,
+            },
+          },
         },
       },
     },
@@ -173,39 +272,26 @@ export async function getUserProfileDashboardById(userId) {
   const stats = statRows.reduce(
     (acc, row) => {
       acc.matches += 1;
-      acc.wins += row.wins || 0;
-      acc.goals += (row.goalsOfficial || 0) + (row.goalsUnofficial || 0);
-      acc.assists += (row.assistsOfficial || 0) + (row.assistsUnofficial || 0);
+      acc.wins += safeNumber(row.wins);
+      acc.losses += safeNumber(row.losses);
+      acc.draws += safeNumber(row.draws);
+      acc.goals += safeNumber(row.goalsOfficial) + safeNumber(row.goalsUnofficial);
+      acc.assists +=
+        safeNumber(row.assistsOfficial) + safeNumber(row.assistsUnofficial);
       return acc;
     },
     {
       matches: 0,
       wins: 0,
+      losses: 0,
+      draws: 0,
       goals: 0,
       assists: 0,
     }
   );
 
-  const history = matchesPlayed.map((match) => {
-    const presence = match.presences.find((p) => p.userId === userId);
-
-    let result = null;
-    if (match.winnerSide && presence?.teamSide) {
-      result = presence.teamSide === match.winnerSide ? "win" : "loss";
-    }
-
-    return {
-      id: match.id,
-      type: String(match.kind || "PELADA").toLowerCase(),
-      title: match.title,
-      arena: match.court?.arena?.name || "Arena",
-      date: match.date,
-      result,
-      score: `${match.teamAScore} x ${match.teamBScore}`,
-    };
-  });
-
-  const rank = buildRank(stats);
+  const history = buildHistory(matchesPlayed, userId);
+  const rank = buildRankFromPlayerRank(user.rank, stats);
   const achievements = buildAchievements(stats, history);
 
   return {
@@ -214,9 +300,13 @@ export async function getUserProfileDashboardById(userId) {
       name: user.name,
       email: user.email,
       phone: user.phone || "",
-      avatarUrl: user.imageUrl || "",
+      avatarUrl: resolveAvatarUrl(user),
+      baseAvatarUrl: user.imageUrl || "",
       role: user.role,
+      isPremium: Boolean(user.isPremium),
+      premiumUntil: user.premiumUntil || null,
       createdAt: user.createdAt,
+
       city: user.profile?.city || "Curitiba - PR",
       bio: user.profile?.bio || "",
       position: user.profile?.position || "MEI",
@@ -225,11 +315,30 @@ export async function getUserProfileDashboardById(userId) {
       level: user.profile?.level || null,
       bairro: user.profile?.bairro || "",
       coverImageUrl: user.profile?.coverImageUrl || "",
+
+      // novos campos premium / visual
+      profileAvatarUrl: user.profile?.avatarUrl || "",
+      avatarFrame: user.profile?.avatarFrame || "",
+      profileTheme: user.profile?.profileTheme || "default",
+      bannerType: user.profile?.bannerType || "STATIC",
+      bannerAnimatedUrl: user.profile?.bannerAnimatedUrl || "",
+      bannerVideoUrl: user.profile?.bannerVideoUrl || "",
+      bannerOverlay: user.profile?.bannerOverlay || "",
+      bannerPosition: user.profile?.bannerPosition || "",
+      showPremiumBadge: Boolean(user.profile?.showPremiumBadge),
+      equippedBadge: user.profile?.equippedBadge || "",
+      glowEffect: user.profile?.glowEffect || "",
+      cardEffect: user.profile?.cardEffect || "",
     },
+
     stats,
+
     rank,
+
     history,
+
     achievements,
+
     feed: feed.map((item) => ({
       id: item.id,
       type: String(item.type || "POST").toLowerCase(),
@@ -240,7 +349,7 @@ export async function getUserProfileDashboardById(userId) {
       user: {
         id: item.user?.id || item.userId,
         name: item.user?.name || "Jogador",
-        avatar: item.user?.imageUrl || "",
+        avatar: resolveFeedAvatar(item),
       },
       meta: item.meta || {},
     })),

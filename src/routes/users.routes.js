@@ -5,6 +5,22 @@ import { getUserProfileDashboardById } from "../services/profile/profileEngine.j
 
 const router = express.Router();
 
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeNullableString(value) {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
+function isPremiumActive(user) {
+  if (!user?.isPremium) return false;
+  if (!user?.premiumUntil) return true;
+  return new Date(user.premiumUntil) > new Date();
+}
+
 /**
  * GET /users/me/profile
  */
@@ -21,6 +37,8 @@ router.get("/me/profile", authRequired, async (req, res, next) => {
         phone: true,
         imageUrl: true,
         role: true,
+        isPremium: true,
+        premiumUntil: true,
         createdAt: true,
         profile: true,
       },
@@ -81,6 +99,7 @@ router.patch("/me/profile", authRequired, async (req, res, next) => {
       name,
       phone,
       imageUrl,
+
       bio,
       city,
       bairro,
@@ -90,6 +109,20 @@ router.patch("/me/profile", authRequired, async (req, res, next) => {
       coverImageUrl,
       level,
       tags,
+
+      // novos campos premium / visual
+      avatarUrl,
+      avatarFrame,
+      profileTheme,
+      bannerType,
+      bannerAnimatedUrl,
+      bannerVideoUrl,
+      bannerOverlay,
+      bannerPosition,
+      showPremiumBadge,
+      equippedBadge,
+      glowEffect,
+      cardEffect,
     } = req.body || {};
 
     if (typeof name === "string" && !name.trim()) {
@@ -110,6 +143,58 @@ router.patch("/me/profile", authRequired, async (req, res, next) => {
       }
     }
 
+    const me = await prisma.user.findUnique({
+      where: { id: meId },
+      select: {
+        id: true,
+        isPremium: true,
+        premiumUntil: true,
+      },
+    });
+
+    if (!me) {
+      return res.status(404).json({ message: "Usuário não encontrado" });
+    }
+
+    const premiumActive = isPremiumActive(me);
+
+    const premiumFieldsWereSent =
+      avatarUrl !== undefined ||
+      avatarFrame !== undefined ||
+      profileTheme !== undefined ||
+      bannerType !== undefined ||
+      bannerAnimatedUrl !== undefined ||
+      bannerVideoUrl !== undefined ||
+      bannerOverlay !== undefined ||
+      bannerPosition !== undefined ||
+      showPremiumBadge !== undefined ||
+      equippedBadge !== undefined ||
+      glowEffect !== undefined ||
+      cardEffect !== undefined;
+
+    if (!premiumActive && premiumFieldsWereSent) {
+      const tryingAnimatedBanner =
+        bannerType === "GIF" ||
+        bannerType === "VIDEO" ||
+        isNonEmptyString(bannerAnimatedUrl) ||
+        isNonEmptyString(bannerVideoUrl);
+
+      const tryingPremiumVisual =
+        isNonEmptyString(avatarFrame) ||
+        isNonEmptyString(profileTheme) ||
+        isNonEmptyString(equippedBadge) ||
+        isNonEmptyString(glowEffect) ||
+        isNonEmptyString(cardEffect) ||
+        showPremiumBadge === true ||
+        isNonEmptyString(avatarUrl);
+
+      if (tryingAnimatedBanner || tryingPremiumVisual) {
+        return res.status(403).json({
+          message: "Recurso premium necessário",
+        });
+      }
+    }
+
     await prisma.user.update({
       where: { id: meId },
       data: {
@@ -123,26 +208,107 @@ router.patch("/me/profile", authRequired, async (req, res, next) => {
       where: { userId: meId },
       create: {
         userId: meId,
-        ...(typeof username === "string" ? { username: username.trim() || null } : {}),
+
+        ...(typeof username === "string"
+          ? { username: username.trim() || null }
+          : {}),
         ...(typeof bio === "string" ? { bio: bio.trim() } : {}),
         ...(typeof city === "string" ? { city: city.trim() } : {}),
         ...(typeof bairro === "string" ? { bairro: bairro.trim() } : {}),
         ...(typeof position === "string" ? { position: position.trim() } : {}),
         ...(typeof foot === "string" ? { foot: foot.trim() } : {}),
-        ...(typeof coverImageUrl === "string" ? { coverImageUrl: coverImageUrl.trim() } : {}),
+        ...(typeof coverImageUrl === "string"
+          ? { coverImageUrl: coverImageUrl.trim() }
+          : {}),
         ...(typeof level === "string" ? { level: level.trim() } : {}),
         ...(tags !== undefined ? { tags } : {}),
+
+        // novos campos premium / visual
+        ...(typeof avatarUrl === "string"
+          ? { avatarUrl: avatarUrl.trim() }
+          : {}),
+        ...(avatarFrame !== undefined
+          ? { avatarFrame: normalizeNullableString(avatarFrame) }
+          : {}),
+        ...(profileTheme !== undefined
+          ? { profileTheme: normalizeNullableString(profileTheme) || "default" }
+          : {}),
+        ...(bannerType !== undefined ? { bannerType } : {}),
+        ...(bannerAnimatedUrl !== undefined
+          ? { bannerAnimatedUrl: normalizeNullableString(bannerAnimatedUrl) }
+          : {}),
+        ...(bannerVideoUrl !== undefined
+          ? { bannerVideoUrl: normalizeNullableString(bannerVideoUrl) }
+          : {}),
+        ...(bannerOverlay !== undefined
+          ? { bannerOverlay: normalizeNullableString(bannerOverlay) }
+          : {}),
+        ...(bannerPosition !== undefined
+          ? { bannerPosition: normalizeNullableString(bannerPosition) }
+          : {}),
+        ...(typeof showPremiumBadge === "boolean"
+          ? { showPremiumBadge }
+          : {}),
+        ...(equippedBadge !== undefined
+          ? { equippedBadge: normalizeNullableString(equippedBadge) }
+          : {}),
+        ...(glowEffect !== undefined
+          ? { glowEffect: normalizeNullableString(glowEffect) }
+          : {}),
+        ...(cardEffect !== undefined
+          ? { cardEffect: normalizeNullableString(cardEffect) }
+          : {}),
       },
       update: {
-        ...(typeof username === "string" ? { username: username.trim() || null } : {}),
+        ...(typeof username === "string"
+          ? { username: username.trim() || null }
+          : {}),
         ...(typeof bio === "string" ? { bio: bio.trim() } : {}),
         ...(typeof city === "string" ? { city: city.trim() } : {}),
         ...(typeof bairro === "string" ? { bairro: bairro.trim() } : {}),
         ...(typeof position === "string" ? { position: position.trim() } : {}),
         ...(typeof foot === "string" ? { foot: foot.trim() } : {}),
-        ...(typeof coverImageUrl === "string" ? { coverImageUrl: coverImageUrl.trim() } : {}),
+        ...(typeof coverImageUrl === "string"
+          ? { coverImageUrl: coverImageUrl.trim() }
+          : {}),
         ...(typeof level === "string" ? { level: level.trim() } : {}),
         ...(tags !== undefined ? { tags } : {}),
+
+        // novos campos premium / visual
+        ...(typeof avatarUrl === "string"
+          ? { avatarUrl: avatarUrl.trim() }
+          : {}),
+        ...(avatarFrame !== undefined
+          ? { avatarFrame: normalizeNullableString(avatarFrame) }
+          : {}),
+        ...(profileTheme !== undefined
+          ? { profileTheme: normalizeNullableString(profileTheme) || "default" }
+          : {}),
+        ...(bannerType !== undefined ? { bannerType } : {}),
+        ...(bannerAnimatedUrl !== undefined
+          ? { bannerAnimatedUrl: normalizeNullableString(bannerAnimatedUrl) }
+          : {}),
+        ...(bannerVideoUrl !== undefined
+          ? { bannerVideoUrl: normalizeNullableString(bannerVideoUrl) }
+          : {}),
+        ...(bannerOverlay !== undefined
+          ? { bannerOverlay: normalizeNullableString(bannerOverlay) }
+          : {}),
+        ...(bannerPosition !== undefined
+          ? { bannerPosition: normalizeNullableString(bannerPosition) }
+          : {}),
+        ...(typeof showPremiumBadge === "boolean"
+          ? { showPremiumBadge }
+          : {}),
+        ...(equippedBadge !== undefined
+          ? { equippedBadge: normalizeNullableString(equippedBadge) }
+          : {}),
+        ...(glowEffect !== undefined
+          ? { glowEffect: normalizeNullableString(glowEffect) }
+          : {}),
+        ...(cardEffect !== undefined
+          ? { cardEffect: normalizeNullableString(cardEffect) }
+          : {}),
       },
     });
 
@@ -155,6 +321,8 @@ router.patch("/me/profile", authRequired, async (req, res, next) => {
         phone: true,
         imageUrl: true,
         role: true,
+        isPremium: true,
+        premiumUntil: true,
         createdAt: true,
         profile: true,
       },
