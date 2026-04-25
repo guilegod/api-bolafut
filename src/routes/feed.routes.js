@@ -8,7 +8,8 @@ import {
   deleteFeedPost,
 } from "../services/profile/feedService.js";
 
-import  authMiddleware  from "../middleware/auth.js";
+// 🔥 CORRETO AQUI
+import { authMiddleware } from "../middleware/auth.js";
 
 const router = Router();
 
