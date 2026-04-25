@@ -9,11 +9,11 @@ import {
 } from "../services/profile/feedService.js";
 
 // 🔥 CORRETO AQUI
-import { authMiddleware } from "../middleware/auth.js";
+import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
-router.use(authMiddleware);
+router.use(authRequired);
 
 router.get("/", async (req, res) => {
   try {
