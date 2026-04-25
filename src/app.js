@@ -19,6 +19,7 @@ import peladaLocationRoutes from "./routes/peladaLocation.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import presenceRoutes from "./routes/presence.routes.js";
 import uploadRoutes from "./routes/upload.routes.js";
+import feedRoutes from "./routes/feed.routes.js";
 
 export const app = express();
 
@@ -145,6 +146,7 @@ app.use("/friends", friendsRoutes);
 app.use("/rank", rankRoutes);
 app.use("/pelada-locations", peladaLocationRoutes);
 app.use("/upload", uploadRoutes);
+app.use("/feed", feedRoutes);
 /* --------------------------------------------------
    404
 -------------------------------------------------- */
