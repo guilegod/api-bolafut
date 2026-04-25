@@ -6,25 +6,24 @@ import {
   sendFriendRequest,
   acceptFriendRequest,
   declineFriendRequest,
+  removeFriend,
 } from "../controllers/friends.controller.js";
 
-// supondo que você já tem auth middleware
 import { authRequired } from "../middleware/auth.js";
 
 const router = Router();
 
 router.use(authRequired);
 
-// amigos (lista final)
 router.get("/", listFriends);
 
-// pedidos
 router.get("/incoming", listIncomingRequests);
 router.get("/outgoing", listOutgoingRequests);
 
-// ações
 router.post("/request/:toUserId", sendFriendRequest);
 router.post("/accept/:fromUserId", acceptFriendRequest);
 router.post("/decline/:fromUserId", declineFriendRequest);
+
+router.delete("/:userId", removeFriend);
 
 export default router;

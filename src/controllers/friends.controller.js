@@ -238,3 +238,58 @@ export async function declineFriendRequest(req, res) {
     return res.status(500).json({ error: err?.message || "Erro ao recusar pedido" });
   }
 }
+// DELETE /friends/:userId
+export async function removeFriend(req, res) {
+  try {
+    const me = req.user?.id;
+    const userId = req.params.userId;
+
+    if (!me) return res.status(401).json({ error: "Unauthorized" });
+    if (!userId) return res.status(400).json({ error: "userId obrigatório" });
+
+    if (String(me) === String(userId)) {
+      return res.status(400).json({ error: "Você não pode remover você mesmo." });
+    }
+
+    const pair = normalizePair(me, userId);
+
+    const friendship = await prisma.friendship.findUnique({
+      where: {
+        userAId_userBId: pair,
+      },
+    });
+
+    if (!friendship) {
+      return res.status(404).json({ error: "Amizade não encontrada." });
+    }
+
+    await prisma.$transaction([
+      prisma.friendship.delete({
+        where: {
+          userAId_userBId: pair,
+        },
+      }),
+
+      prisma.friendRequest.updateMany({
+        where: {
+          OR: [
+            { fromId: me, toId: userId },
+            { fromId: userId, toId: me },
+          ],
+        },
+        data: {
+          status: "removed",
+        },
+      }),
+    ]);
+
+    return res.json({
+      ok: true,
+      message: "Amigo removido com sucesso.",
+    });
+  } catch (err) {
+    return res.status(500).json({
+      error: err?.message || "Erro ao remover amigo",
+    });
+  }
+}
