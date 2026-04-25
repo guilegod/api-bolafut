@@ -112,63 +112,43 @@ model User {
   password String
   role     Role    @default(user)
 
-  // premium
   isPremium    Boolean   @default(false)
   premiumUntil DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // legado
   courts Court[] @relation("ArenaOwnerCourts")
-
-  // arenas do arena_owner
   arenas Arena[] @relation("ArenaOwnerArenas")
 
-  // partidas criadas
-  matches Match[] @relation("OrganizerMatches")
-
-  // partidas controladas
+  matches           Match[] @relation("OrganizerMatches")
   controlledMatches Match[] @relation("MatchController")
 
-  // locais cadastrados para peladas públicas
   createdPeladaLocations PeladaLocation[] @relation("PeladaLocationCreatedBy")
 
-  // presenças em partidas
   presences MatchPresence[]
-
-  // chat das partidas
-  messages MatchMessage[]
-
-  // reservas
+  messages  MatchMessage[]
   reservations Reservation[]
-
-  // stats por partida
   stats MatchPlayerStat[]
 
-  // eventos de partida
   eventGoals         MatchEvent[] @relation("EventPlayer")
   eventAssists       MatchEvent[] @relation("EventAssist")
   createdMatchEvents MatchEvent[] @relation("EventCreatedBy")
 
-  // feed do jogador
-  feedPosts FeedPost[]
+  feedPosts    FeedPost[]
+  feedLikes    FeedLike[]
+  feedComments FeedComment[]
 
-  // parceria com arenas
   partnerships PartnerArena[] @relation("OrganizerPartnerships")
-
   passwordResetTokens PasswordResetToken[]
 
-  // perfil público
   profile Profile?
 
-  // amizade
   friendRequestsSent     FriendRequest[] @relation("FriendRequestsSent")
   friendRequestsReceived FriendRequest[] @relation("FriendRequestsReceived")
   friendshipsA           Friendship[]    @relation("FriendshipsA")
   friendshipsB           Friendship[]    @relation("FriendshipsB")
 
-  // ranking
   rank PlayerRank?
 
   @@index([isPremium])
@@ -264,11 +244,9 @@ model Court {
   city    String?
   address String?
 
-  // arena principal
   arenaId String
   arena   Arena  @relation(fields: [arenaId], references: [id], onDelete: Cascade)
 
-  // legado
   arenaOwnerId String?
   arenaOwner   User?   @relation("ArenaOwnerCourts", fields: [arenaOwnerId], references: [id], onDelete: SetNull)
 
@@ -316,20 +294,16 @@ model Match {
   organizerId String
   organizer   User   @relation("OrganizerMatches", fields: [organizerId], references: [id], onDelete: Cascade)
 
-  // quadra (quando a partida é vinculada a arena/quadra)
   courtId String?
   court   Court?  @relation(fields: [courtId], references: [id], onDelete: Cascade)
 
-  // local cadastrado para pelada pública
   peladaLocationId String?
   peladaLocation   PeladaLocation? @relation(fields: [peladaLocationId], references: [id], onDelete: SetNull)
 
-  // dados manuais do local
   manualArenaName  String?
   manualAddress    String?
   isManualLocation Boolean @default(false)
 
-  // privacidade / senha
   isPrivate      Boolean @default(false)
   accessPassword String?
 
@@ -481,11 +455,47 @@ model FeedPost {
   imageUrl String?
   meta     Json?
 
+  likes    FeedLike[]
+  comments FeedComment[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([userId, createdAt])
   @@index([matchId])
+  @@index([type])
+  @@index([createdAt])
+}
+
+model FeedLike {
+  id     String @id @default(cuid())
+  postId String
+  userId String
+
+  post FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([postId, userId])
+  @@index([postId])
+  @@index([userId])
+}
+
+model FeedComment {
+  id     String @id @default(cuid())
+  postId String
+  userId String
+  text   String
+
+  post FeedPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([postId, createdAt])
+  @@index([userId])
 }
 
 model PartnerArena {
@@ -551,7 +561,6 @@ model Profile {
 
   tags Json?
 
-  // personalização premium / visual
   avatarUrl         String?
   avatarFrame       String?
   profileTheme      String?           @default("default")
